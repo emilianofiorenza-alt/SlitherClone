@@ -16,5 +16,8 @@ public interface ISimulationEndpoint
 
 public interface ISnapshotRenderer
 {
-    void Render(WorldSnapshot snapshot, float interpolationAlpha);
+    void Render(
+        WorldSnapshot previousSnapshot,
+        WorldSnapshot snapshot,
+        float interpolationAlpha);
 }

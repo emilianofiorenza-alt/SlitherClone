@@ -19,6 +19,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Slither.Client\Slither.Client.csproj"
+                      AdditionalProperties="TargetFramework=net9.0" />
     <ProjectReference Include="..\..\src\Slither.Core\Slither.Core.csproj" />
     <ProjectReference Include="..\..\src\Slither.Protocol\Slither.Protocol.csproj" />
   </ItemGroup>
