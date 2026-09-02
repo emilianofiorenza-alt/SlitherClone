@@ -21,15 +21,27 @@ public sealed class SlitherGame : Game
     private WorldSnapshot _snapshot;
     private double _metricsTime;
     private int _renderedFrames;
+    private bool _contentLoaded;
 
-    public SlitherGame()
+    public SlitherGame(int? preferredWidth = null, int? preferredHeight = null)
     {
+#if ANDROID
+        _graphics = new GraphicsDeviceManager(this)
+        {
+            PreferredBackBufferWidth = preferredWidth ?? 1280,
+            PreferredBackBufferHeight = preferredHeight ?? 720,
+            IsFullScreen = true,
+            HardwareModeSwitch = false,
+            SupportedOrientations = DisplayOrientation.LandscapeLeft | DisplayOrientation.LandscapeRight
+        };
+#else
         _graphics = new GraphicsDeviceManager(this)
         {
             PreferredBackBufferWidth = 1280,
             PreferredBackBufferHeight = 720,
             SupportedOrientations = DisplayOrientation.LandscapeLeft | DisplayOrientation.LandscapeRight
         };
+#endif
 
         IsFixedTimeStep = false;
         IsMouseVisible = true;
@@ -43,6 +55,7 @@ public sealed class SlitherGame : Game
         RefreshScreenLayout(force: true);
         _snapshot = _simulation.CaptureSnapshot();
         _previousSnapshot = _snapshot;
+        _contentLoaded = true;
     }
 
     protected override void Update(GameTime gameTime)
@@ -73,7 +86,10 @@ public sealed class SlitherGame : Game
     protected override void Draw(GameTime gameTime)
     {
         _renderer!.Render(_previousSnapshot, _snapshot, _clock.InterpolationAlpha);
-        _controlsRenderer!.Render(_screenLayout!, _commands!.VirtualControls);
+        _controlsRenderer!.Render(
+            _screenLayout!,
+            _commands!.VirtualControls,
+            _snapshot.Snake.Size);
         RecordMetrics(gameTime.ElapsedGameTime.TotalSeconds);
         base.Draw(gameTime);
     }
@@ -81,7 +97,10 @@ public sealed class SlitherGame : Game
     protected override void OnActivated(object sender, EventArgs args)
     {
         _clock.Reset();
-        RefreshScreenLayout(force: true);
+        if (_contentLoaded)
+        {
+            RefreshScreenLayout(force: true);
+        }
         base.OnActivated(sender, args);
     }
 
@@ -113,8 +132,9 @@ public sealed class SlitherGame : Game
 
         var renderHz = _renderedFrames / _metricsTime;
         var snake = _snapshot.Snake;
-        var message = $"Slither Step 2C | {renderHz:F0} FPS | tick {_snapshot.SimulationTick} | " +
-                      $"pos {snake.HeadX:F1},{snake.HeadY:F1} | body {snake.Body.Count} | " +
+        var message = $"Slither Step 2D | {renderHz:F0} FPS | tick {_snapshot.SimulationTick} | " +
+                      $"body {snake.Body.Count} | size {snake.Size} | energy {snake.Energy}/5 | " +
+                      $"dots {_snapshot.VisibleDots.Count} ({_snapshot.CollectedDotCount} collected) | " +
                       $"{(snake.IsBoosting ? "BOOST" : $"speed {snake.CurrentSpeed:F0}")}";
         Debug.WriteLine(message);
 #if !ANDROID

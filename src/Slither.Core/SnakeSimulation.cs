@@ -3,30 +3,53 @@ namespace Slither.Core;
 public sealed class SnakeSimulation
 {
     private readonly SnakeSimulationSettings _settings;
-    private readonly WorldVector[] _body;
+    private readonly List<WorldVector> _body;
     private WorldVector _headPosition = new(0, 0);
     private WorldVector _heading = new(1, 0);
     private WorldVector _targetHeading = new(1, 0);
     private double _currentSpeed;
     private bool _isBoosting;
     private bool _isBoundaryCorrecting;
+    private int _energy;
+    private int _totalEnergy;
 
     public SnakeSimulation(SnakeSimulationSettings? settings = null)
     {
         _settings = settings ?? SnakeSimulationSettings.Default;
         ValidateSettings(_settings);
         _currentSpeed = _settings.BaseSpeed;
-        _body = new WorldVector[_settings.InitialBodyNodes];
+        _body = new List<WorldVector>(_settings.InitialBodyNodes);
 
-        for (var index = 0; index < _body.Length; index++)
+        for (var index = 0; index < _settings.InitialBodyNodes; index++)
         {
-            _body[index] = _headPosition - (_heading * (_settings.BodySpacing * (index + 1)));
+            _body.Add(_headPosition - (_heading * (_settings.BodySpacing * (index + 1))));
         }
     }
 
     public ulong Tick { get; private set; }
 
     public SnakeSimulationSettings Settings => _settings;
+
+    public void AddEnergy(int energy, int energyPerSegment)
+    {
+        if (energy < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(energy));
+        }
+
+        if (energyPerSegment < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(energyPerSegment));
+        }
+
+        _energy += energy;
+        _totalEnergy += energy;
+        while (_energy >= energyPerSegment)
+        {
+            _energy -= energyPerSegment;
+            AppendBodyNode();
+        }
+    }
 
     public void Step(
         double fixedDeltaTime,
@@ -47,7 +70,12 @@ public sealed class SnakeSimulation
         }
 
         _isBoosting = boost;
-        _currentSpeed = boost ? _settings.BoostSpeed : _settings.BaseSpeed;
+        var targetSpeed = boost ? _settings.BoostSpeed : _settings.BaseSpeed;
+        var acceleration = boost ? _settings.BoostAcceleration : _settings.BoostDeceleration;
+        _currentSpeed = MoveTowards(
+            _currentSpeed,
+            targetSpeed,
+            acceleration * fixedDeltaTime);
         TurnTowardsTarget(fixedDeltaTime);
         _headPosition += _heading * (_currentSpeed * fixedDeltaTime);
         ConstrainToArena(fixedDeltaTime);
@@ -57,8 +85,8 @@ public sealed class SnakeSimulation
 
     public SnakeState CaptureState()
     {
-        var bodySnapshot = new BodyNode[_body.Length];
-        for (var index = 0; index < _body.Length; index++)
+        var bodySnapshot = new BodyNode[_body.Count];
+        for (var index = 0; index < _body.Count; index++)
         {
             bodySnapshot[index] = new BodyNode(_body[index]);
         }
@@ -70,8 +98,10 @@ public sealed class SnakeSimulation
             _targetHeading,
             _currentSpeed,
             bodySnapshot,
-            _settings.BodySpacing * _body.Length,
-            _isBoosting);
+            _settings.BodySpacing * _body.Count,
+            _isBoosting,
+            _energy,
+            _totalEnergy);
     }
 
     private void TurnTowardsTarget(double fixedDeltaTime)
@@ -96,7 +126,7 @@ public sealed class SnakeSimulation
         for (var iteration = 0; iteration < _settings.ConstraintIterations; iteration++)
         {
             var previous = _headPosition;
-            for (var index = 0; index < _body.Length; index++)
+            for (var index = 0; index < _body.Count; index++)
             {
                 var delta = previous - _body[index];
                 var distance = delta.Length;
@@ -108,6 +138,12 @@ public sealed class SnakeSimulation
                 previous = _body[index];
             }
         }
+    }
+
+    private void AppendBodyNode()
+    {
+        var tail = _body[^1];
+        _body.Add(tail);
     }
 
     private void ConstrainToArena(double fixedDeltaTime)
@@ -156,6 +192,8 @@ public sealed class SnakeSimulation
     {
         if (settings.BaseSpeed <= 0 ||
             settings.BoostSpeed < settings.BaseSpeed ||
+            settings.BoostAcceleration <= 0 ||
+            settings.BoostDeceleration <= 0 ||
             settings.MaxTurnRateDegrees <= 0 ||
             settings.BoostMaxTurnRateDegrees <= 0 ||
             settings.HeadRadius <= 0 ||
@@ -168,5 +206,15 @@ public sealed class SnakeSimulation
         {
             throw new ArgumentOutOfRangeException(nameof(settings), "Snake settings contain invalid values.");
         }
+    }
+
+    private static double MoveTowards(double current, double target, double maximumDelta)
+    {
+        if (Math.Abs(target - current) <= maximumDelta)
+        {
+            return target;
+        }
+
+        return current + (Math.Sign(target - current) * maximumDelta);
     }
 }

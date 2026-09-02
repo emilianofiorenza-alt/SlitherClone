@@ -1,4 +1,5 @@
 using Slither.Core;
+using Slither.Client;
 
 namespace Slither.Tests;
 
@@ -36,7 +37,7 @@ public sealed class SnakeSimulationTests
     }
 
     [Fact]
-    public void SimulationSelectsNormalAndBoostSpeed()
+    public void BoostAcceleratesAndDeceleratesProgressively()
     {
         var normal = new SnakeSimulation();
         var boost = new SnakeSimulation();
@@ -45,15 +46,37 @@ public sealed class SnakeSimulationTests
         boost.Step(SimulationSettings.FixedDeltaTime, 1000, 0, true, true);
 
         Assert.Equal(normal.Settings.BaseSpeed, normal.CaptureState().CurrentSpeed);
-        Assert.Equal(boost.Settings.BoostSpeed, boost.CaptureState().CurrentSpeed);
+        Assert.Equal(normal.Settings.BaseSpeed * 3, boost.Settings.BoostSpeed);
+        var firstBoostSpeed = boost.Settings.BaseSpeed +
+                              (boost.Settings.BoostAcceleration * SimulationSettings.FixedDeltaTime);
+        Assert.Equal(firstBoostSpeed, boost.CaptureState().CurrentSpeed, 10);
         Assert.Equal(
             normal.Settings.BaseSpeed * SimulationSettings.FixedDeltaTime,
             normal.CaptureState().HeadPosition.X,
             10);
         Assert.Equal(
-            boost.Settings.BoostSpeed * SimulationSettings.FixedDeltaTime,
+            firstBoostSpeed * SimulationSettings.FixedDeltaTime,
             boost.CaptureState().HeadPosition.X,
             10);
+
+        for (var tick = 0; tick < 30; tick++)
+        {
+            boost.Step(SimulationSettings.FixedDeltaTime, 1, 0, true, true);
+        }
+        Assert.Equal(boost.Settings.BoostSpeed, boost.CaptureState().CurrentSpeed);
+
+        boost.Step(SimulationSettings.FixedDeltaTime, 1, 0, true, false);
+        Assert.Equal(
+            boost.Settings.BoostSpeed -
+            (boost.Settings.BoostDeceleration * SimulationSettings.FixedDeltaTime),
+            boost.CaptureState().CurrentSpeed,
+            10);
+
+        for (var tick = 0; tick < 30; tick++)
+        {
+            boost.Step(SimulationSettings.FixedDeltaTime, 1, 0, true, false);
+        }
+        Assert.Equal(boost.Settings.BaseSpeed, boost.CaptureState().CurrentSpeed);
     }
 
     [Fact]
@@ -106,5 +129,47 @@ public sealed class SnakeSimulationTests
         }
 
         Assert.True(observedInwardHeading);
+    }
+
+    [Fact]
+    public void EveryFiveEnergyAddsExactlyOneBodyNodeAndPreservesTotalScore()
+    {
+        Assert.Equal(5, WorldSimulationSettings.Default.EnergyPerSegment);
+        var simulation = new SnakeSimulation();
+
+        simulation.AddEnergy(4, 5);
+        Assert.Equal(5, simulation.CaptureState().Body.Count);
+        Assert.Equal(4, simulation.CaptureState().Energy);
+        Assert.Equal(54, SlitherSize.Calculate(
+            simulation.Settings.InitialBodyNodes,
+            simulation.CaptureState().TotalEnergy));
+
+        var tailBeforeGrowth = simulation.CaptureState().Body[^1].Position;
+        simulation.AddEnergy(1, 5);
+        var stateAfterGrowth = simulation.CaptureState();
+        Assert.Equal(6, stateAfterGrowth.Body.Count);
+        Assert.Equal(0, stateAfterGrowth.Energy);
+        Assert.Equal(tailBeforeGrowth, stateAfterGrowth.Body[^1].Position);
+        Assert.Equal(stateAfterGrowth.Body[^2].Position, stateAfterGrowth.Body[^1].Position);
+        Assert.Equal(55, SlitherSize.Calculate(
+            simulation.Settings.InitialBodyNodes,
+            stateAfterGrowth.TotalEnergy));
+
+        for (var tick = 0; tick < 30; tick++)
+        {
+            simulation.Step(SimulationSettings.FixedDeltaTime, 1, 0, true, false);
+        }
+
+        var movedState = simulation.CaptureState();
+        var newTailSpacing = (movedState.Body[^2].Position - movedState.Body[^1].Position).Length;
+        Assert.True(newTailSpacing > 0);
+        Assert.True(newTailSpacing <= simulation.Settings.BodySpacing + 1e-10);
+
+        simulation.AddEnergy(10, 5);
+        Assert.Equal(8, simulation.CaptureState().Body.Count);
+        Assert.Equal(0, simulation.CaptureState().Energy);
+        Assert.Equal(65, SlitherSize.Calculate(
+            simulation.Settings.InitialBodyNodes,
+            simulation.CaptureState().TotalEnergy));
     }
 }

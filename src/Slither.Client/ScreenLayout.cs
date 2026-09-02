@@ -67,16 +67,14 @@ public sealed class ScreenLayout
         var shortSide = Math.Min(usableWidth, usableHeight);
 
         var joystickRadius = shortSide * settings.JoystickBaseRadiusRatio;
-        var joystickMargin = shortSide * settings.JoystickMarginRatio;
         var joystickCenter = new ScreenPoint(
-            safeArea.Left + joystickMargin + joystickRadius,
-            viewportHeight - safeArea.Bottom - joystickMargin - joystickRadius);
+            safeArea.Left + (shortSide * settings.JoystickHorizontalCenterInsetRatio),
+            viewportHeight - safeArea.Bottom - (shortSide * settings.JoystickBottomCenterInsetRatio));
 
         var boostRadius = shortSide * settings.BoostRadiusRatio;
-        var boostMargin = shortSide * settings.BoostMarginRatio;
         var boostCenter = new ScreenPoint(
-            viewportWidth - safeArea.Right - boostMargin - boostRadius,
-            viewportHeight - safeArea.Bottom - boostMargin - boostRadius);
+            viewportWidth - safeArea.Right - (shortSide * settings.BoostHorizontalCenterInsetRatio),
+            viewportHeight - safeArea.Bottom - (shortSide * settings.BoostBottomCenterInsetRatio));
 
         return new ScreenLayout(
             viewportWidth,

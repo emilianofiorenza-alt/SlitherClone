@@ -8,6 +8,7 @@ public sealed class ArchitectureBoundaryTests
     [Theory]
     [InlineData(typeof(SimulationSettings))]
     [InlineData(typeof(SnakeSimulation))]
+    [InlineData(typeof(WorldSimulation))]
     [InlineData(typeof(PlayerCommand))]
     public void NeutralAssembliesDoNotReferencePlatformFrameworks(Type markerType)
     {

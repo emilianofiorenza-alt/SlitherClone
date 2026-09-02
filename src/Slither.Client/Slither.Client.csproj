@@ -10,6 +10,11 @@
     <ProjectReference Include="..\Slither.Protocol\Slither.Protocol.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\BackGround.jpg"
+                      LogicalName="Slither.Client.Assets.background.jpg" />
+  </ItemGroup>
+
   <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'">
     <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.5.1" />
   </ItemGroup>

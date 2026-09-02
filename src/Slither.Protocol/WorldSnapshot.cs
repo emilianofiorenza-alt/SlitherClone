@@ -2,6 +2,13 @@ namespace Slither.Protocol;
 
 public readonly record struct BodyNodeSnapshot(double X, double Y, double Radius);
 
+public readonly record struct DotSnapshot(
+    long Id,
+    double X,
+    double Y,
+    double Radius,
+    int Energy);
+
 public readonly record struct SnakeSnapshot(
     double HeadX,
     double HeadY,
@@ -13,7 +20,9 @@ public readonly record struct SnakeSnapshot(
     double HeadRadius,
     IReadOnlyList<BodyNodeSnapshot> Body,
     double TargetLength,
-    bool IsBoosting);
+    bool IsBoosting,
+    int Energy,
+    int Size);
 
 public readonly record struct ArenaSnapshot(
     double CenterX,
@@ -24,4 +33,7 @@ public readonly record struct ArenaSnapshot(
 public readonly record struct WorldSnapshot(
     ulong SimulationTick,
     ArenaSnapshot Arena,
-    SnakeSnapshot Snake);
+    SnakeSnapshot Snake,
+    IReadOnlyList<DotSnapshot> VisibleDots,
+    int ActiveCellCount,
+    int CollectedDotCount);

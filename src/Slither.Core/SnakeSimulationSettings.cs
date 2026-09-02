@@ -4,19 +4,23 @@ public sealed record SnakeSimulationSettings
 {
     public static SnakeSimulationSettings Default { get; } = new();
 
-    public double BaseSpeed { get; init; } = 5.0;
+    public double BaseSpeed { get; init; } = 3.0;
 
-    public double BoostSpeed { get; init; } = 8.0;
+    public double BoostSpeed { get; init; } = 9.0;
 
-    public double MaxTurnRateDegrees { get; init; } = 200.0;
+    public double BoostAcceleration { get; init; } = 18.0;
 
-    public double BoostMaxTurnRateDegrees { get; init; } = 170.0;
+    public double BoostDeceleration { get; init; } = 24.0;
 
-    public double HeadRadius { get; init; } = 0.425;
+    public double MaxTurnRateDegrees { get; init; } = 260.0;
 
-    public double BodyRadius { get; init; } = 0.39;
+    public double BoostMaxTurnRateDegrees { get; init; } = 230.0;
 
-    public double BodySpacing { get; init; } = 0.43;
+    public double HeadRadius { get; init; } = 0.23684375;
+
+    public double BodyRadius { get; init; } = 0.23684375;
+
+    public double BodySpacing { get; init; } = 0.15;
 
     public int InitialBodyNodes { get; init; } = 5;
 

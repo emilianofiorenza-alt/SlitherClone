@@ -10,4 +10,6 @@ public sealed record SnakeState(
     double CurrentSpeed,
     IReadOnlyList<BodyNode> Body,
     double TargetLength,
-    bool IsBoosting);
+    bool IsBoosting,
+    int Energy,
+    int TotalEnergy);

@@ -10,10 +10,11 @@ public sealed class VirtualControlsTests
         var layout = ScreenLayout.Create(1200, 800, new ScreenInsets(20, 10, 30, 40));
         var shortSide = 750f;
 
-        Assert.Equal(shortSide * 0.10f, layout.JoystickBase.Radius, 3);
-        Assert.Equal(20 + shortSide * 0.15f, layout.JoystickBase.Center.X, 3);
-        Assert.Equal(800 - 40 - shortSide * 0.15f, layout.JoystickBase.Center.Y, 3);
-        Assert.Equal(1200 - 30 - shortSide * 0.14f, layout.BoostButton.Center.X, 3);
+        Assert.Equal(shortSide * 0.075f, layout.JoystickBase.Radius, 3);
+        Assert.Equal(20 + shortSide * 0.255f, layout.JoystickBase.Center.X, 3);
+        Assert.Equal(800 - 40 - shortSide * 0.25f, layout.JoystickBase.Center.Y, 3);
+        Assert.Equal(1200 - 30 - shortSide * 0.245f, layout.BoostButton.Center.X, 3);
+        Assert.Equal(800 - 40 - shortSide * 0.25f, layout.BoostButton.Center.Y, 3);
     }
 
     [Fact]
