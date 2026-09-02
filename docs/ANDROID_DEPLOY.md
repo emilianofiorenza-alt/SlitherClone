@@ -21,6 +21,8 @@ Lo stato deve essere `device`. Se appare `unauthorized`, sbloccare il telefono, 
 
 Dalla radice del repository:
 
+Il progetto incorpora gli assembly gestiti anche nell'APK Debug (`EmbedAssembliesIntoApk=true`), così il pacchetto è autonomo e può essere installato direttamente con ADB senza il Fast Deployment di Visual Studio.
+
 ```powershell
 dotnet restore .\SlitherClone.sln
 dotnet build .\src\Slither.Android\Slither.Android.csproj -c Debug
