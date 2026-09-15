@@ -68,6 +68,7 @@ public sealed class SlitherGame : Game
 
     protected override void Update(GameTime gameTime)
     {
+        using var profile = new ProfileScope("Slither.Update");
 #if !ANDROID
         var keyboard = Keyboard.GetState();
         if (keyboard.IsKeyDown(Keys.Escape))
@@ -93,8 +94,10 @@ public sealed class SlitherGame : Game
             var command = _commands!.SampleCommand();
             _simulation.Submit(in command);
             _previousSnapshot = _snapshot;
-            _simulation.Step(fixedDeltaTime);
-            _snapshot = _simulation.CaptureSnapshot();
+            using (new ProfileScope("Slither.Simulation"))
+                _simulation.Step(fixedDeltaTime);
+            using (new ProfileScope("Slither.Snapshot"))
+                _snapshot = _simulation.CaptureSnapshot();
         });
 
         base.Update(gameTime);
@@ -102,8 +105,10 @@ public sealed class SlitherGame : Game
 
     protected override void Draw(GameTime gameTime)
     {
-        _renderer!.UpdateCameraScale(_snapshot.Snake.SizeScale, gameTime.ElapsedGameTime.TotalSeconds);
+        using var profile = new ProfileScope("Slither.Draw");
+        _renderer!.UpdateCameraScale(_snapshot.Snake.MatchScore, gameTime.ElapsedGameTime.TotalSeconds);
         _renderer!.Render(_previousSnapshot, _snapshot, _clock.InterpolationAlpha);
+        using (new ProfileScope("Slither.Controls"))
         _controlsRenderer!.Render(
             _screenLayout!,
             _commands!.VirtualControls,
@@ -153,8 +158,11 @@ public sealed class SlitherGame : Game
         var metrics = _snapshot.Metrics;
         var message = $"Slither Step 3 | {renderHz:F0} FPS | tick {_snapshot.SimulationTick} | " +
                       $"snakes {metrics.AliveSnakes}/{_snapshot.ConfiguredBotCount + 1} visible {_snapshot.VisibleSnakes?.Count ?? 1} | " +
-                      $"nodes {metrics.TotalBodyNodes} | score {snake.MatchScore} | " +
+                      $"nodes {metrics.TotalBodyNodes} player {snake.Body.Count} | score {snake.MatchScore} | " +
                       $"dots {_snapshot.VisibleDots.Count} | collisions {metrics.CollisionCandidates}/{metrics.NarrowPhaseTests} | " +
+                      $"ms ai {metrics.AiMilliseconds:F2} move {metrics.MotionMilliseconds:F2} " +
+                      $"index {metrics.SpatialIndexMilliseconds:F2} collision {metrics.CollisionMilliseconds:F2} " +
+                      $"snapshot {metrics.SnapshotMilliseconds:F2} | " +
                       $"deaths {metrics.TotalDeaths} respawns {metrics.TotalRespawns} | " +
                       $"{(snake.IsBoosting ? "BOOST" : $"speed {snake.CurrentSpeed:F0}")}";
         Debug.WriteLine(message);

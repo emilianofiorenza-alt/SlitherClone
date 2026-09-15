@@ -11,6 +11,7 @@ public sealed class WorldSimulation
     private readonly SnakeCollisionDetector _collisionDetector;
     private readonly List<SnakeEntity> _snakes = [];
     private readonly List<WorldEvent> _events = [];
+    private readonly List<CollisionBody> _collisionBodies = [];
     private ulong _randomState;
     private double _dynamicSpawnTime;
     private long _totalDeaths;
@@ -18,6 +19,7 @@ public sealed class WorldSimulation
     private long _releasedMass;
     private long _destroyedMass;
     private long _debugGrantedMass;
+    private bool _suppressDeathsForProfiling;
     private double _aiMilliseconds;
     private double _motionMilliseconds;
     private double _indexMilliseconds;
@@ -46,6 +48,9 @@ public sealed class WorldSimulation
     public GameplayMode GameplayMode { get; private set; }
     public int ConfiguredBotCount { get; private set; }
     public ulong Tick { get; private set; }
+
+    public void ConfigureControlledProfiling(bool enabled) =>
+        _suppressDeathsForProfiling = enabled;
 
     public void ConfigureGameplayMode(GameplayMode mode)
     {
@@ -277,17 +282,17 @@ public sealed class WorldSimulation
 
     private void RebuildCollisionIndex()
     {
-        var bodies = new List<CollisionBody>();
+        _collisionBodies.Clear();
         foreach (var entity in _snakes)
         {
             if (entity.LifeState != SnakeLifeState.Alive) continue;
             var radius = entity.Simulation.BodyRadius * _settings.BodyCollisionRadiusScale;
             var body = entity.Simulation.BodyPositions;
             for (var index = 0; index < body.Count; index++)
-                bodies.Add(new CollisionBody(entity.Id, entity.Generation, body[index], body[index], radius, index));
+                _collisionBodies.Add(new CollisionBody(entity.Id, entity.Generation, body[index], body[index], radius, index));
         }
         _collisionDetector.BeginTick();
-        _collisionDetector.Rebuild(bodies);
+        _collisionDetector.Rebuild(_collisionBodies);
     }
 
     private List<CollisionEvent> DetectCollisions()
@@ -356,6 +361,10 @@ public sealed class WorldSimulation
 
     private void ResolveDeaths(IReadOnlyList<CollisionEvent> collisions)
     {
+        // Keep collision detection and its cost in the profile, but prevent
+        // uncommon death-drop bursts from contaminating the steady-state baseline.
+        if (_suppressDeathsForProfiling) return;
+
         var uniqueVictims = new HashSet<(SnakeId Id, int Generation)>();
         foreach (var collision in collisions)
         {

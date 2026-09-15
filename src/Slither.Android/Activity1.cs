@@ -60,7 +60,7 @@ namespace Slither.Android
                 return;
             }
 
-            window.AddFlags(WindowManagerFlags.Fullscreen);
+            window.AddFlags(WindowManagerFlags.Fullscreen | WindowManagerFlags.KeepScreenOn);
 
 #pragma warning disable CA1416, CA1422
             if (Build.VERSION.SdkInt >= BuildVersionCodes.P)

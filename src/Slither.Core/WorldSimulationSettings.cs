@@ -44,7 +44,7 @@ public sealed record WorldSimulationSettings
 
     public GameplayMode StartupGameplayMode { get; init; } = GameplayMode.Standard;
 
-    public int DebugLongInitialMatchScore { get; init; } = 1000;
+    public int DebugLongInitialMatchScore { get; init; } = 10000;
 
     public int InitialScorePointsPerBodyNode { get; init; } = 10;
 

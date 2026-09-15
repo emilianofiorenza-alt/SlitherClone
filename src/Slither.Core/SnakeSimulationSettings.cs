@@ -16,6 +16,10 @@ public sealed record SnakeSimulationSettings
 
     public double BoostMaxTurnRateDegrees { get; init; } = 290.0;
 
+    public double InputFilterTurnRateDegrees { get; init; } = 720.0;
+
+    public double SizeTurnPenalty { get; init; } = 0.35;
+
     public double HeadRadius { get; init; } = 0.23684375;
 
     public double BodyRadius { get; init; } = 0.23684375;

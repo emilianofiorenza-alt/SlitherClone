@@ -18,8 +18,10 @@ public sealed class SnakeCollisionDetector
 {
     private readonly double _cellSize;
     private readonly Dictionary<GridCell, List<int>> _cells = [];
+    private readonly List<GridCell> _activeCells = [];
     private readonly List<CollisionBody> _bodies = [];
     private readonly HashSet<int> _candidateIndices = [];
+    private readonly List<CollisionBody> _hits = [];
 
     public SnakeCollisionDetector(double cellSize)
     {
@@ -37,54 +39,66 @@ public sealed class SnakeCollisionDetector
 
     public void Rebuild(IEnumerable<CollisionBody> bodies)
     {
-        _cells.Clear();
+        foreach (var cell in _activeCells) _cells[cell].Clear();
+        _activeCells.Clear();
         _bodies.Clear();
         foreach (var body in bodies)
         {
             var index = _bodies.Count;
             _bodies.Add(body);
-            ForCells(body.Start, body.End, body.Radius, cell =>
+            var minX = CellCoordinate(Math.Min(body.Start.X, body.End.X) - body.Radius);
+            var maxX = CellCoordinate(Math.Max(body.Start.X, body.End.X) + body.Radius);
+            var minY = CellCoordinate(Math.Min(body.Start.Y, body.End.Y) - body.Radius);
+            var maxY = CellCoordinate(Math.Max(body.Start.Y, body.End.Y) + body.Radius);
+            for (var y = minY; y <= maxY; y++)
             {
-                if (!_cells.TryGetValue(cell, out var list))
+                for (var x = minX; x <= maxX; x++)
                 {
-                    list = [];
-                    _cells.Add(cell, list);
+                    var cell = new GridCell(x, y);
+                    if (!_cells.TryGetValue(cell, out var list))
+                    {
+                        list = [];
+                        _cells.Add(cell, list);
+                    }
+                    if (list.Count == 0) _activeCells.Add(cell);
+                    list.Add(index);
                 }
-                list.Add(index);
-            });
+            }
         }
     }
 
     public IReadOnlyList<CollisionBody> Query(in CollisionHead head)
     {
         _candidateIndices.Clear();
+        _hits.Clear();
         var ownerId = head.OwnerId;
-        ForCells(head.Position, head.Position, head.Radius, cell =>
+        var minX = CellCoordinate(head.Position.X - head.Radius);
+        var maxX = CellCoordinate(head.Position.X + head.Radius);
+        var minY = CellCoordinate(head.Position.Y - head.Radius);
+        var maxY = CellCoordinate(head.Position.Y + head.Radius);
+        for (var y = minY; y <= maxY; y++)
         {
-            if (_cells.TryGetValue(cell, out var indices))
+            for (var x = minX; x <= maxX; x++)
             {
+                if (!_cells.TryGetValue(new GridCell(x, y), out var indices)) continue;
                 foreach (var index in indices)
                 {
-                    if (_bodies[index].OwnerId != ownerId)
-                    {
-                        _candidateIndices.Add(index);
-                    }
+                    if (_bodies[index].OwnerId != ownerId) _candidateIndices.Add(index);
                 }
             }
-        });
+        }
 
         CandidateCount += _candidateIndices.Count;
-        var result = new List<CollisionBody>();
         foreach (var index in _candidateIndices)
         {
             NarrowPhaseCount++;
             var body = _bodies[index];
             if (CircleIntersectsCapsule(head.Position, head.Radius, body.Start, body.End, body.Radius))
             {
-                result.Add(body);
+                _hits.Add(body);
             }
         }
-        return result;
+        return _hits;
     }
 
     public void BeginTick()
@@ -128,20 +142,7 @@ public sealed class SnakeCollisionDetector
         return result;
     }
 
-    private void ForCells(WorldVector start, WorldVector end, double radius, Action<GridCell> action)
-    {
-        var minX = (int)Math.Floor((Math.Min(start.X, end.X) - radius) / _cellSize);
-        var maxX = (int)Math.Floor((Math.Max(start.X, end.X) + radius) / _cellSize);
-        var minY = (int)Math.Floor((Math.Min(start.Y, end.Y) - radius) / _cellSize);
-        var maxY = (int)Math.Floor((Math.Max(start.Y, end.Y) + radius) / _cellSize);
-        for (var y = minY; y <= maxY; y++)
-        {
-            for (var x = minX; x <= maxX; x++)
-            {
-                action(new GridCell(x, y));
-            }
-        }
-    }
+    private int CellCoordinate(double value) => (int)Math.Floor(value / _cellSize);
 
     private readonly record struct GridCell(int X, int Y);
 }

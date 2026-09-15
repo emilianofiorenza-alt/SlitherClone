@@ -17,6 +17,7 @@ public sealed class SnakeSimulation
     private int _energy;
     private int _totalEnergy;
     private double _sizeScale = 1.0;
+    private int _targetBodyNodeCount;
 
     public SnakeSimulation(
         SnakeSimulationSettings? settings = null,
@@ -45,6 +46,7 @@ public sealed class SnakeSimulation
         }
         _trail.Add(_headPosition);
         _trailLength = _settings.BodySpacing * _settings.InitialBodyNodes;
+        _targetBodyNodeCount = _body.Count;
     }
 
     public ulong Tick { get; private set; }
@@ -92,6 +94,7 @@ public sealed class SnakeSimulation
         {
             _energy -= energyPerSegment;
             AppendBodyNode();
+            _targetBodyNodeCount = _body.Count;
         }
     }
 
@@ -102,6 +105,7 @@ public sealed class SnakeSimulation
     {
         if (targetCount < 1) throw new ArgumentOutOfRangeException(nameof(targetCount));
         while (_body.Count < targetCount) AppendBodyNode();
+        _targetBodyNodeCount = targetCount;
     }
 
     public void Step(
@@ -118,8 +122,13 @@ public sealed class SnakeSimulation
 
         if (hasDirection && !_isBoundaryCorrecting)
         {
-            _targetHeading = new WorldVector(requestedDirectionX, requestedDirectionY)
+            var requestedHeading = new WorldVector(requestedDirectionX, requestedDirectionY)
                 .NormalizedOr(_targetHeading);
+            _targetHeading = RotateTowards(
+                _targetHeading,
+                requestedHeading,
+                ScaledTurnRate(_settings.InputFilterTurnRateDegrees),
+                fixedDeltaTime);
         }
 
         _isBoosting = boost;
@@ -152,7 +161,7 @@ public sealed class SnakeSimulation
             _targetHeading,
             _currentSpeed,
             bodySnapshot,
-            BodySpacing * _body.Count,
+            BodySpacing * _targetBodyNodeCount,
             _isBoosting,
             _energy,
             _totalEnergy,
@@ -167,6 +176,7 @@ public sealed class SnakeSimulation
         var turnRateDegrees = _isBoosting
             ? _settings.BoostMaxTurnRateDegrees
             : _settings.MaxTurnRateDegrees;
+        turnRateDegrees = ScaledTurnRate(turnRateDegrees);
         var maximumTurn = turnRateDegrees * (Math.PI / 180.0) * fixedDeltaTime;
         var appliedTurn = Math.Clamp(angularError, -maximumTurn, maximumTurn);
         var cosine = Math.Cos(appliedTurn);
@@ -174,6 +184,28 @@ public sealed class SnakeSimulation
         _heading = new WorldVector(
             (_heading.X * cosine) - (_heading.Y * sine),
             (_heading.X * sine) + (_heading.Y * cosine)).NormalizedOr(_heading);
+    }
+
+    private double ScaledTurnRate(double turnRateDegrees) =>
+        turnRateDegrees /
+        (1.0 + (_settings.SizeTurnPenalty * Math.Max(0.0, _sizeScale - 1.0)));
+
+    private static WorldVector RotateTowards(
+        WorldVector current,
+        WorldVector target,
+        double turnRateDegrees,
+        double fixedDeltaTime)
+    {
+        var cross = (current.X * target.Y) - (current.Y * target.X);
+        var dot = (current.X * target.X) + (current.Y * target.Y);
+        var angularError = Math.Atan2(cross, dot);
+        var maximumTurn = turnRateDegrees * (Math.PI / 180.0) * fixedDeltaTime;
+        var appliedTurn = Math.Clamp(angularError, -maximumTurn, maximumTurn);
+        var cosine = Math.Cos(appliedTurn);
+        var sine = Math.Sin(appliedTurn);
+        return new WorldVector(
+            (current.X * cosine) - (current.Y * sine),
+            (current.X * sine) + (current.Y * cosine)).NormalizedOr(current);
     }
 
     private void UpdateTrailAndBody(double distanceTravelled, double fixedDeltaTime)
@@ -184,10 +216,18 @@ public sealed class SnakeSimulation
             _trailLength += distanceTravelled;
             for (var index = 0; index < _bodyFollowDistances.Count; index++)
             {
-                var nominalDistance = BodySpacing * (index + 1);
-                _bodyFollowDistances[index] = Math.Min(
-                    nominalDistance,
-                    _bodyFollowDistances[index] + distanceTravelled);
+                var nominalDistance = BodySpacing * Math.Min(index + 1, _targetBodyNodeCount);
+                _bodyFollowDistances[index] = MoveTowards(
+                    _bodyFollowDistances[index], nominalDistance, distanceTravelled);
+            }
+
+            // Retire surplus nodes only once they overlap the preceding node.
+            // All distances change through movement, never by cutting off the tail.
+            while (_body.Count > _targetBodyNodeCount &&
+                   Math.Abs(_bodyFollowDistances[^1] - _bodyFollowDistances[^2]) <= 1e-10)
+            {
+                _body.RemoveAt(_body.Count - 1);
+                _bodyFollowDistances.RemoveAt(_bodyFollowDistances.Count - 1);
             }
         }
 
@@ -329,6 +369,8 @@ public sealed class SnakeSimulation
             settings.BoostDeceleration <= 0 ||
             settings.MaxTurnRateDegrees <= 0 ||
             settings.BoostMaxTurnRateDegrees <= 0 ||
+            settings.InputFilterTurnRateDegrees <= 0 ||
+            settings.SizeTurnPenalty < 0 ||
             settings.HeadRadius <= 0 ||
             settings.BodyRadius <= 0 ||
             settings.BodySpacing <= 0 ||

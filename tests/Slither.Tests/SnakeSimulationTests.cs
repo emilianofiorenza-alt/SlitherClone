@@ -37,6 +37,30 @@ public sealed class SnakeSimulationTests
     }
 
     [Fact]
+    public void LargerSnakeTurnsMoreGraduallyAndFiltersAbruptInput()
+    {
+        var normal = new SnakeSimulation();
+        var large = new SnakeSimulation();
+        large.SetSizeScale(4.0);
+
+        normal.Step(SimulationSettings.FixedDeltaTime, 0, 1, true, false);
+        large.Step(SimulationSettings.FixedDeltaTime, 0, 1, true, false);
+
+        var normalState = normal.CaptureState();
+        var largeState = large.CaptureState();
+        var normalAngle = Math.Atan2(normalState.Heading.Y, normalState.Heading.X);
+        var largeAngle = Math.Atan2(largeState.Heading.Y, largeState.Heading.X);
+        var largeTargetAngle = Math.Atan2(largeState.TargetHeading.Y, largeState.TargetHeading.X);
+
+        Assert.Equal(normal.Settings.MaxTurnRateDegrees * Math.PI / 180.0 * SimulationSettings.FixedDeltaTime, normalAngle, 10);
+        var expectedLargeTurnRate = large.Settings.MaxTurnRateDegrees /
+                                    (1 + (large.Settings.SizeTurnPenalty * 3));
+        Assert.Equal(expectedLargeTurnRate * Math.PI / 180.0 * SimulationSettings.FixedDeltaTime, largeAngle, 10);
+        Assert.True(largeTargetAngle < Math.PI / 2, "The requested direction should be filtered instead of changing instantaneously.");
+        Assert.True(largeAngle < normalAngle);
+    }
+
+    [Fact]
     public void BoostAcceleratesAndDeceleratesProgressively()
     {
         var normal = new SnakeSimulation();

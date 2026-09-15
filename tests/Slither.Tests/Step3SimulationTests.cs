@@ -4,6 +4,22 @@ namespace Slither.Tests;
 
 public sealed class Step3SimulationTests
 {
+    [Fact]
+    public void InitialVisualScaleStartsAtNominalSizeWithoutChangingSegmentCapacity()
+    {
+        Assert.Equal(
+            SnakeGrowthCurve.MinimumScale * SnakeGrowthCurve.InitialVisualScaleMultiplier,
+            SnakeGrowthCurve.ForScore(50),
+            10);
+        Assert.Equal(6, SnakeGrowthCurve.BodyNodesForScore(50, 5));
+        Assert.Equal(
+            SnakeGrowthCurve.MinimumScale +
+            ((SnakeGrowthCurve.LinearScaleEndScore - SnakeGrowthCurve.GrowthStartScore) /
+             SnakeGrowthCurve.ScorePerScaleUnit),
+            SnakeGrowthCurve.ForScore(SnakeGrowthCurve.LinearScaleEndScore),
+            10);
+    }
+
     [Theory]
     [InlineData(0, 0.8)]
     [InlineData(50, 0.8)]
@@ -51,32 +67,72 @@ public sealed class Step3SimulationTests
     {
         Assert.Equal(1.0, SnakeGrowthCurve.CameraScaleForBodyScale(0.8), 10);
         Assert.Equal(1.0, SnakeGrowthCurve.CameraScaleForBodyScale(1.0), 10);
+        Assert.Equal(1.0, SnakeGrowthCurve.CameraScaleForScore(50), 10);
+        Assert.True(SnakeGrowthCurve.ForScore(50) > 1.0);
     }
 
     [Theory]
     [InlineData(50, 6)]
-    [InlineData(250, 27)]
+    [InlineData(250, 29)]
     [InlineData(500, 48)]
-    [InlineData(1000, 78)]
-    [InlineData(2000, 112)]
-    [InlineData(3000, 131)]
+    [InlineData(1000, 69)]
+    [InlineData(2000, 84)]
+    [InlineData(3000, 92)]
+    [InlineData(10000, 117)]
+    [InlineData(20000, 155)]
     public void BodyLengthUsesScaleAdjustedPointCost(int score, int expectedNodes)
     {
         Assert.Equal(expectedNodes, SnakeGrowthCurve.BodyNodesForScore(score, 5));
     }
 
     [Fact]
-    public void DeathDropsPreserveAllEnergyWithOneDotPerBodyNode()
+    public void HighScoreBodyKeepsGrowingWithoutLinearRunawayAndCameraStopsZooming()
     {
-        const int totalEnergy = 3000;
+        var nodesAt10K = SnakeGrowthCurve.BodyNodesForScore(10_000, 5);
+        var nodesAt20K = SnakeGrowthCurve.BodyNodesForScore(20_000, 5);
+        var nodesAt40K = SnakeGrowthCurve.BodyNodesForScore(40_000, 5);
+
+        Assert.True(nodesAt20K > nodesAt10K);
+        Assert.True(nodesAt40K > nodesAt20K);
+        Assert.True(nodesAt40K < nodesAt20K * 2);
+        Assert.Equal(
+            SnakeGrowthCurve.MaximumCameraScale,
+            SnakeGrowthCurve.CameraScaleForScore(40_000),
+            10);
+    }
+
+    [Theory]
+    [InlineData(3000)]
+    [InlineData(10000)]
+    [InlineData(20000)]
+    public void DeathDropsPreserveAllEnergyWithOneDotPerBodyNode(int totalEnergy)
+    {
         var dotCount = SnakeGrowthCurve.BodyNodesForScore(totalEnergy, 5);
         var energies = Enumerable.Range(0, dotCount)
             .Select(index => DeathDropEnergy.ForIndex(totalEnergy, dotCount, index))
             .ToArray();
 
-        Assert.Equal(131, energies.Length);
-        Assert.All(energies, energy => Assert.InRange(energy, 22, 23));
+        Assert.Equal(dotCount, energies.Length);
+        Assert.All(energies, energy => Assert.InRange(energy, totalEnergy / dotCount, (totalEnergy / dotCount) + 1));
         Assert.Equal(totalEnergy, energies.Sum());
+    }
+
+    [Fact]
+    public void SurplusBodyNodesRetractOnlyThroughMovementAndCanGrowAgain()
+    {
+        var simulation = new SnakeSimulation(SnakeSimulationSettings.Default with { InitialBodyNodes = 20 });
+        var positions = simulation.BodyPositions.ToArray();
+        simulation.EnsureBodyNodeCount(5);
+        Assert.Equal(positions, simulation.BodyPositions.ToArray());
+        simulation.Step(1.0 / 60.0, 1, 0, true, false);
+        Assert.Equal(20, simulation.BodyPositions.Count);
+        for (var tick = 0; tick < 180; tick++)
+            simulation.Step(1.0 / 60.0, 1, 0, true, false);
+        Assert.Equal(5, simulation.BodyPositions.Count);
+        var tail = simulation.BodyPositions[^1];
+        simulation.EnsureBodyNodeCount(8);
+        Assert.Equal(8, simulation.BodyPositions.Count);
+        Assert.Equal(tail, simulation.BodyPositions[^1]);
     }
 
     [Fact]
