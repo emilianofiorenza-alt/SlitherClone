@@ -12,4 +12,5 @@ public sealed record SnakeState(
     double TargetLength,
     bool IsBoosting,
     int Energy,
-    int TotalEnergy);
+    int TotalEnergy,
+    double SizeScale);

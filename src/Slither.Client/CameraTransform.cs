@@ -14,7 +14,22 @@ public sealed class CameraTransform
         VisibleWorldHeight = visibleWorldHeight;
     }
 
-    public double VisibleWorldHeight { get; }
+    public double VisibleWorldHeight { get; private set; }
+
+    public void ApproachVisibleWorldHeight(double targetHeight, double elapsedSeconds, double transitionSeconds = 0.7)
+    {
+        if (!double.IsFinite(targetHeight) || targetHeight <= 0)
+            throw new ArgumentOutOfRangeException(nameof(targetHeight));
+        if (!double.IsFinite(elapsedSeconds) || elapsedSeconds < 0)
+            throw new ArgumentOutOfRangeException(nameof(elapsedSeconds));
+        if (!double.IsFinite(transitionSeconds) || transitionSeconds <= 0)
+            throw new ArgumentOutOfRangeException(nameof(transitionSeconds));
+
+        // Four time constants put the camera within roughly 2% of the target
+        // at the end of the requested transition.
+        var amount = 1.0 - Math.Exp((-4.0 * elapsedSeconds) / transitionSeconds);
+        VisibleWorldHeight += (targetHeight - VisibleWorldHeight) * amount;
+    }
 
     public ScreenPoint WorldToScreen(
         ScreenLayout layout,

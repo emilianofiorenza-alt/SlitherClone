@@ -110,6 +110,61 @@ public sealed class SnakeSimulationTests
     }
 
     [Fact]
+    public void LongBodyFollowsCircularTrailWithoutRapidlyCollapsingTowardHead()
+    {
+        var simulation = new SnakeSimulation();
+        simulation.AddGrowth(35 * 5, 5);
+
+        for (var tick = 0; tick < 2_000; tick++)
+        {
+            var directionAngle = tick * SimulationSettings.FixedDeltaTime * 1.4;
+            simulation.Step(
+                SimulationSettings.FixedDeltaTime,
+                Math.Cos(directionAngle),
+                Math.Sin(directionAngle),
+                true,
+                false);
+        }
+
+        var state = simulation.CaptureState();
+        var headToTail = (state.HeadPosition - state.Body[^1].Position).Length;
+        Assert.Equal(40, state.Body.Count);
+        Assert.True(headToTail > 3.0, $"The circular chain collapsed to {headToTail:F3} world units.");
+    }
+
+    [Fact]
+    public void CircularTrailRelaxesInwardButOnlyByAModerateAmount()
+    {
+        var rigid = new SnakeSimulation(SnakeSimulationSettings.Default with
+        {
+            BodyTrailRelaxationPerSecond = 0
+        });
+        var relaxed = new SnakeSimulation();
+        rigid.AddGrowth(35 * 5, 5);
+        relaxed.AddGrowth(35 * 5, 5);
+
+        for (var tick = 0; tick < 2_000; tick++)
+        {
+            var directionAngle = tick * SimulationSettings.FixedDeltaTime * 1.4;
+            rigid.Step(SimulationSettings.FixedDeltaTime, Math.Cos(directionAngle), Math.Sin(directionAngle), true, false);
+            relaxed.Step(SimulationSettings.FixedDeltaTime, Math.Cos(directionAngle), Math.Sin(directionAngle), true, false);
+        }
+
+        const double turnRadiansPerSecond = 1.4;
+        var relaxedState = relaxed.CaptureState();
+        var center = relaxedState.HeadPosition +
+                     (new WorldVector(-relaxedState.Heading.Y, relaxedState.Heading.X) *
+                      (relaxedState.CurrentSpeed / turnRadiansPerSecond));
+        var rigidRadius = rigid.CaptureState().Body.Average(node => (node.Position - center).Length);
+        var relaxedRadius = relaxedState.Body.Average(node => (node.Position - center).Length);
+
+        Assert.True(relaxedRadius < rigidRadius - 0.02,
+            $"Relaxation was not visible: rigid={rigidRadius:F3}, relaxed={relaxedRadius:F3}.");
+        Assert.True(relaxedRadius > rigidRadius - 0.60,
+            $"Relaxation was too aggressive: rigid={rigidRadius:F3}, relaxed={relaxedRadius:F3}.");
+    }
+
+    [Fact]
     public void HeadCannotCrossArenaBoundaryAndTurnsBackInward()
     {
         var settings = SnakeSimulationSettings.Default with
@@ -132,26 +187,26 @@ public sealed class SnakeSimulationTests
     }
 
     [Fact]
-    public void EveryFiveEnergyAddsExactlyOneBodyNodeAndPreservesTotalScore()
+    public void EveryTenEnergyAddsExactlyOneBodyNodeAndPreservesTotalScore()
     {
-        Assert.Equal(5, WorldSimulationSettings.Default.EnergyPerSegment);
+        Assert.Equal(10, WorldSimulationSettings.Default.EnergyPerSegment);
         var simulation = new SnakeSimulation();
 
-        simulation.AddEnergy(4, 5);
+        simulation.AddEnergy(9, 10);
         Assert.Equal(5, simulation.CaptureState().Body.Count);
-        Assert.Equal(4, simulation.CaptureState().Energy);
-        Assert.Equal(54, SlitherSize.Calculate(
+        Assert.Equal(9, simulation.CaptureState().Energy);
+        Assert.Equal(59, SlitherSize.Calculate(
             simulation.Settings.InitialBodyNodes,
             simulation.CaptureState().TotalEnergy));
 
         var tailBeforeGrowth = simulation.CaptureState().Body[^1].Position;
-        simulation.AddEnergy(1, 5);
+        simulation.AddEnergy(1, 10);
         var stateAfterGrowth = simulation.CaptureState();
         Assert.Equal(6, stateAfterGrowth.Body.Count);
         Assert.Equal(0, stateAfterGrowth.Energy);
         Assert.Equal(tailBeforeGrowth, stateAfterGrowth.Body[^1].Position);
         Assert.Equal(stateAfterGrowth.Body[^2].Position, stateAfterGrowth.Body[^1].Position);
-        Assert.Equal(55, SlitherSize.Calculate(
+        Assert.Equal(60, SlitherSize.Calculate(
             simulation.Settings.InitialBodyNodes,
             stateAfterGrowth.TotalEnergy));
 
@@ -165,10 +220,10 @@ public sealed class SnakeSimulationTests
         Assert.True(newTailSpacing > 0);
         Assert.True(newTailSpacing <= simulation.Settings.BodySpacing + 1e-10);
 
-        simulation.AddEnergy(10, 5);
+        simulation.AddEnergy(20, 10);
         Assert.Equal(8, simulation.CaptureState().Body.Count);
         Assert.Equal(0, simulation.CaptureState().Energy);
-        Assert.Equal(65, SlitherSize.Calculate(
+        Assert.Equal(80, SlitherSize.Calculate(
             simulation.Settings.InitialBodyNodes,
             simulation.CaptureState().TotalEnergy));
     }

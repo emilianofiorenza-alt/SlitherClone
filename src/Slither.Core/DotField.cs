@@ -21,6 +21,12 @@ public sealed class DotField
 
     public int CollectedCount => _collectedIds.Count;
 
+    public int ActiveDotCount => _cells.Values.Sum(static dots => dots.Count);
+
+    public long ActiveEnergy => _cells.Values.Sum(static dots => dots.Sum(static dot => (long)dot.Energy));
+
+    public long EnvironmentalMassGenerated { get; private set; }
+
     public IReadOnlyList<DotState> ActivateAround(WorldVector position)
     {
         var centerCell = GetCell(position);
@@ -42,10 +48,61 @@ public sealed class DotField
         return active;
     }
 
+    public void EnsureAround(WorldVector position)
+    {
+        var centerCell = GetCell(position);
+        for (var cellY = centerCell.Y - _settings.ActiveCellRadius; cellY <= centerCell.Y + _settings.ActiveCellRadius; cellY++)
+        {
+            for (var cellX = centerCell.X - _settings.ActiveCellRadius; cellX <= centerCell.X + _settings.ActiveCellRadius; cellX++)
+            {
+                EnsureCell(new CellCoordinate(cellX, cellY));
+            }
+        }
+    }
+
+    public bool TryFindNearest(WorldVector position, double maximumDistance, out DotState nearest)
+    {
+        if (!double.IsFinite(maximumDistance) || maximumDistance <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumDistance));
+        }
+
+        var centerCell = GetCell(position);
+        var cellRadius = (int)Math.Ceiling(maximumDistance / _settings.DotCellSize);
+        var bestDistanceSquared = maximumDistance * maximumDistance;
+        nearest = default;
+        var found = false;
+        for (var cellY = centerCell.Y - cellRadius; cellY <= centerCell.Y + cellRadius; cellY++)
+        {
+            for (var cellX = centerCell.X - cellRadius; cellX <= centerCell.X + cellRadius; cellX++)
+            {
+                var cell = new CellCoordinate(cellX, cellY);
+                EnsureCell(cell);
+                foreach (var dot in _cells[cell])
+                {
+                    var delta = dot.Position - position;
+                    var distanceSquared = (delta.X * delta.X) + (delta.Y * delta.Y);
+                    if (distanceSquared >= bestDistanceSquared)
+                    {
+                        continue;
+                    }
+                    bestDistanceSquared = distanceSquared;
+                    nearest = dot;
+                    found = true;
+                }
+            }
+        }
+        return found;
+    }
+
     public int CollectAt(WorldVector position, double headRadius)
+        => CollectDetailedAt(position, headRadius).Score;
+
+    public DotCollection CollectDetailedAt(WorldVector position, double headRadius)
     {
         var centerCell = GetCell(position);
         var collectedEnergy = 0;
+        var collectedDots = 0;
         for (var cellY = centerCell.Y - 1; cellY <= centerCell.Y + 1; cellY++)
         {
             for (var cellX = centerCell.X - 1; cellX <= centerCell.X + 1; cellX++)
@@ -63,13 +120,48 @@ public sealed class DotField
                     }
 
                     collectedEnergy += dot.Energy;
+                    collectedDots++;
                     _collectedIds.Add(dot.Id);
                     dots.RemoveAt(index);
                 }
             }
         }
 
-        return collectedEnergy;
+        return new DotCollection(collectedDots, collectedEnergy);
+    }
+
+    public void AddDropDot(
+        WorldVector position,
+        int scoreValue,
+        double radiusScale = 1.0,
+        ulong fadeInStartTick = 0,
+        ulong fadeInDurationTicks = 0,
+        double? radiusOverride = null)
+    {
+        var energy = Math.Max(scoreValue, 1);
+        if (!double.IsFinite(radiusScale) || radiusScale <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(radiusScale));
+        }
+        var radius = radiusOverride ?? (RadiusForEnergy(energy) * radiusScale);
+        if (!double.IsFinite(radius) || radius <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(radiusOverride));
+        }
+        if (position.Length + radius >= _arenaRadius)
+        {
+            return;
+        }
+
+        var cell = GetCell(position);
+        EnsureCell(cell);
+        _cells[cell].Add(new DotState(
+            _nextDynamicId++,
+            position,
+            radius,
+            energy,
+            fadeInStartTick,
+            fadeInDurationTicks));
     }
 
     public IReadOnlyList<DotState> SpawnNear(WorldVector headPosition, int? count = null)
@@ -95,6 +187,7 @@ public sealed class DotField
             EnsureCell(cell);
             _cells[cell].Add(dot);
             spawned.Add(dot);
+            EnvironmentalMassGenerated += energy;
         }
 
         return spawned;
@@ -129,6 +222,7 @@ public sealed class DotField
         }
 
         _cells.Add(cell, dots);
+        EnvironmentalMassGenerated += dots.Sum(static dot => (long)dot.Energy);
     }
 
     private CellCoordinate GetCell(WorldVector position) => new(
@@ -198,9 +292,13 @@ public sealed class DotField
             settings.DynamicSpawnCount < 0 ||
             settings.DynamicSpawnMinimumRadius < 0 ||
             settings.DynamicSpawnMaximumRadius < settings.DynamicSpawnMinimumRadius ||
-            settings.EnergyPerSegment < 1)
+            settings.EnergyPerSegment < 1 ||
+            settings.GrowthPerDot < 1 ||
+            settings.GrowthMassPerSegment < 1)
         {
             throw new ArgumentOutOfRangeException(nameof(settings), "World settings contain invalid values.");
         }
     }
 }
+
+public readonly record struct DotCollection(int Count, int Score);

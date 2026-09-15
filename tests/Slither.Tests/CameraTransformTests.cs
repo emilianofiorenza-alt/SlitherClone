@@ -27,4 +27,17 @@ public sealed class CameraTransformTests
         Assert.Equal(760, screen.X, 3);
         Assert.Equal(300, screen.Y, 3);
     }
+
+    [Fact]
+    public void CameraApproachesZoomTargetWithoutJumping()
+    {
+        var camera = new CameraTransform(12);
+
+        camera.ApproachVisibleWorldHeight(30, 0.1, 0.7);
+
+        Assert.InRange(camera.VisibleWorldHeight, 12.01, 29.99);
+        for (var index = 0; index < 70; index++)
+            camera.ApproachVisibleWorldHeight(30, 0.1, 0.7);
+        Assert.Equal(30, camera.VisibleWorldHeight, 3);
+    }
 }

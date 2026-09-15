@@ -4,6 +4,10 @@ public sealed class SnakeSimulation
 {
     private readonly SnakeSimulationSettings _settings;
     private readonly List<WorldVector> _body;
+    private readonly List<double> _bodyFollowDistances;
+    private readonly List<WorldVector> _trail;
+    private int _trailStartIndex;
+    private double _trailLength;
     private WorldVector _headPosition = new(0, 0);
     private WorldVector _heading = new(1, 0);
     private WorldVector _targetHeading = new(1, 0);
@@ -12,23 +16,63 @@ public sealed class SnakeSimulation
     private bool _isBoundaryCorrecting;
     private int _energy;
     private int _totalEnergy;
+    private double _sizeScale = 1.0;
 
-    public SnakeSimulation(SnakeSimulationSettings? settings = null)
+    public SnakeSimulation(
+        SnakeSimulationSettings? settings = null,
+        WorldVector? initialPosition = null,
+        WorldVector? initialHeading = null)
     {
         _settings = settings ?? SnakeSimulationSettings.Default;
         ValidateSettings(_settings);
+        _headPosition = initialPosition ?? new WorldVector(0, 0);
+        _heading = (initialHeading ?? new WorldVector(1, 0)).NormalizedOr(new WorldVector(1, 0));
+        _targetHeading = _heading;
         _currentSpeed = _settings.BaseSpeed;
         _body = new List<WorldVector>(_settings.InitialBodyNodes);
+        _bodyFollowDistances = new List<double>(_settings.InitialBodyNodes);
+        _trail = new List<WorldVector>(_settings.InitialBodyNodes + 128);
 
         for (var index = 0; index < _settings.InitialBodyNodes; index++)
         {
             _body.Add(_headPosition - (_heading * (_settings.BodySpacing * (index + 1))));
+            _bodyFollowDistances.Add(_settings.BodySpacing * (index + 1));
         }
+
+        for (var index = _body.Count - 1; index >= 0; index--)
+        {
+            _trail.Add(_body[index]);
+        }
+        _trail.Add(_headPosition);
+        _trailLength = _settings.BodySpacing * _settings.InitialBodyNodes;
     }
 
     public ulong Tick { get; private set; }
 
     public SnakeSimulationSettings Settings => _settings;
+
+    public WorldVector HeadPosition => _headPosition;
+
+    public WorldVector Heading => _heading;
+
+    public IReadOnlyList<WorldVector> BodyPositions => _body;
+
+    public double SizeScale => _sizeScale;
+
+    public double HeadRadius => _settings.HeadRadius * _sizeScale;
+
+    public double BodyRadius => _settings.BodyRadius * _sizeScale;
+
+    public double BodySpacing => _settings.BodySpacing * _sizeScale;
+
+    public void SetSizeScale(double sizeScale)
+    {
+        if (!double.IsFinite(sizeScale) || sizeScale <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(sizeScale));
+        }
+        _sizeScale = sizeScale;
+    }
 
     public void AddEnergy(int energy, int energyPerSegment)
     {
@@ -49,6 +93,15 @@ public sealed class SnakeSimulation
             _energy -= energyPerSegment;
             AppendBodyNode();
         }
+    }
+
+    public void AddGrowth(int growthMass, int growthMassPerSegment) =>
+        AddEnergy(growthMass, growthMassPerSegment);
+
+    public void EnsureBodyNodeCount(int targetCount)
+    {
+        if (targetCount < 1) throw new ArgumentOutOfRangeException(nameof(targetCount));
+        while (_body.Count < targetCount) AppendBodyNode();
     }
 
     public void Step(
@@ -77,9 +130,10 @@ public sealed class SnakeSimulation
             targetSpeed,
             acceleration * fixedDeltaTime);
         TurnTowardsTarget(fixedDeltaTime);
+        var previousHeadPosition = _headPosition;
         _headPosition += _heading * (_currentSpeed * fixedDeltaTime);
         ConstrainToArena(fixedDeltaTime);
-        UpdateBodyChain();
+        UpdateTrailAndBody((previousHeadPosition - _headPosition).Length, fixedDeltaTime);
         Tick++;
     }
 
@@ -98,10 +152,11 @@ public sealed class SnakeSimulation
             _targetHeading,
             _currentSpeed,
             bodySnapshot,
-            _settings.BodySpacing * _body.Count,
+            BodySpacing * _body.Count,
             _isBoosting,
             _energy,
-            _totalEnergy);
+            _totalEnergy,
+            _sizeScale);
     }
 
     private void TurnTowardsTarget(double fixedDeltaTime)
@@ -121,35 +176,113 @@ public sealed class SnakeSimulation
             (_heading.X * sine) + (_heading.Y * cosine)).NormalizedOr(_heading);
     }
 
-    private void UpdateBodyChain()
+    private void UpdateTrailAndBody(double distanceTravelled, double fixedDeltaTime)
     {
-        for (var iteration = 0; iteration < _settings.ConstraintIterations; iteration++)
+        if (distanceTravelled > 1e-12)
         {
-            var previous = _headPosition;
-            for (var index = 0; index < _body.Count; index++)
+            _trail.Add(_headPosition);
+            _trailLength += distanceTravelled;
+            for (var index = 0; index < _bodyFollowDistances.Count; index++)
             {
-                var delta = previous - _body[index];
-                var distance = delta.Length;
-                if (distance > _settings.BodySpacing)
-                {
-                    _body[index] += delta * ((distance - _settings.BodySpacing) / distance);
-                }
-
-                previous = _body[index];
+                var nominalDistance = BodySpacing * (index + 1);
+                _bodyFollowDistances[index] = Math.Min(
+                    nominalDistance,
+                    _bodyFollowDistances[index] + distanceTravelled);
             }
         }
+
+        RelaxTrail(fixedDeltaTime);
+        SampleBodyFromTrail();
+        PruneTrail();
+    }
+
+    private void RelaxTrail(double fixedDeltaTime)
+    {
+        var span = _settings.BodyTrailRelaxationSpan;
+        if (_trail.Count - _trailStartIndex < (span * 2) + 1)
+        {
+            return;
+        }
+
+        var amount = 1.0 - Math.Exp(-_settings.BodyTrailRelaxationPerSecond * fixedDeltaTime);
+        for (var index = _trailStartIndex + span; index < _trail.Count - span; index++)
+        {
+            var midpoint = (_trail[index - span] + _trail[index + span]) * 0.5;
+            _trail[index] += (midpoint - _trail[index]) * amount;
+        }
+
+        _trailLength = 0;
+        for (var index = _trailStartIndex + 1; index < _trail.Count; index++)
+        {
+            _trailLength += (_trail[index] - _trail[index - 1]).Length;
+        }
+    }
+
+    private void SampleBodyFromTrail()
+    {
+        var trailIndex = _trail.Count - 1;
+        var distanceAtNewerPoint = 0.0;
+        var newerPoint = _trail[trailIndex];
+        for (var bodyIndex = 0; bodyIndex < _body.Count; bodyIndex++)
+        {
+            var targetDistance = _bodyFollowDistances[bodyIndex];
+            while (trailIndex > _trailStartIndex)
+            {
+                var olderPoint = _trail[trailIndex - 1];
+                var segmentLength = (newerPoint - olderPoint).Length;
+                if (distanceAtNewerPoint + segmentLength >= targetDistance)
+                {
+                    var amount = segmentLength <= 1e-12
+                        ? 0
+                        : (targetDistance - distanceAtNewerPoint) / segmentLength;
+                    _body[bodyIndex] = newerPoint + ((olderPoint - newerPoint) * amount);
+                    break;
+                }
+                distanceAtNewerPoint += segmentLength;
+                trailIndex--;
+                newerPoint = olderPoint;
+            }
+
+            if (trailIndex == _trailStartIndex && distanceAtNewerPoint < targetDistance)
+            {
+                _body[bodyIndex] = _trail[_trailStartIndex];
+            }
+        }
+    }
+
+    private void PruneTrail()
+    {
+        var requiredLength = _bodyFollowDistances[^1] + BodySpacing;
+        while (_trailStartIndex + 1 < _trail.Count)
+        {
+            var firstSegmentLength = (_trail[_trailStartIndex + 1] - _trail[_trailStartIndex]).Length;
+            if (_trailLength - firstSegmentLength < requiredLength)
+            {
+                break;
+            }
+            _trailLength -= firstSegmentLength;
+            _trailStartIndex++;
+        }
+
+        if (_trailStartIndex < 1024)
+        {
+            return;
+        }
+        _trail.RemoveRange(0, _trailStartIndex);
+        _trailStartIndex = 0;
     }
 
     private void AppendBodyNode()
     {
         var tail = _body[^1];
         _body.Add(tail);
+        _bodyFollowDistances.Add(_bodyFollowDistances[^1]);
     }
 
     private void ConstrainToArena(double fixedDeltaTime)
     {
         var distanceFromCenter = _headPosition.Length;
-        var playableRadius = _settings.ArenaRadius - _settings.HeadRadius;
+        var playableRadius = _settings.ArenaRadius - HeadRadius;
         if (distanceFromCenter > playableRadius)
         {
             var outward = _headPosition.NormalizedOr(new WorldVector(1, 0));
@@ -168,7 +301,7 @@ public sealed class SnakeSimulation
         TurnTowards(_targetHeading, _settings.BoundaryTurnRateDegrees, fixedDeltaTime);
 
         var inwardAlignment = (_heading.X * inward.X) + (_heading.Y * inward.Y);
-        if (inwardAlignment > 0.35 && _headPosition.Length < playableRadius - _settings.HeadRadius)
+        if (inwardAlignment > 0.35 && _headPosition.Length < playableRadius - HeadRadius)
         {
             _isBoundaryCorrecting = false;
         }
@@ -201,6 +334,8 @@ public sealed class SnakeSimulation
             settings.BodySpacing <= 0 ||
             settings.InitialBodyNodes < 1 ||
             settings.ConstraintIterations < 1 ||
+            settings.BodyTrailRelaxationPerSecond < 0 ||
+            settings.BodyTrailRelaxationSpan < 1 ||
             settings.ArenaRadius <= settings.HeadRadius ||
             settings.BoundaryTurnRateDegrees <= 0)
         {

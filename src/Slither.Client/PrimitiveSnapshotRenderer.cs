@@ -1,17 +1,20 @@
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
+using Slither.Core;
 using Slither.Protocol;
 
 namespace Slither.Client;
 
 public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
 {
-    private const int CircleSegments = 192;
+    private const int CircleSegments = 96;
     private const int DotTextureSize = 64;
     private const double TextureWorldWidth = 14.0;
+    private static readonly Vector2[] UnitCircle = CreateUnitCircle();
 
     private static readonly Color ArenaColor = new(12, 31, 43);
     private static readonly Color OutsideColor = new(92, 13, 22);
+    private static readonly Color SnakeShadowColor = new(0, 0, 0, 145);
     private static readonly Color BoundaryColor = new(205, 43, 52);
     private static readonly Color[] DotPalette =
     [
@@ -26,11 +29,24 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
         new(145, 105, 255),
         new(75, 175, 255)
     ];
+    private static readonly (Color Body, Color Rim, Color Head)[] SnakePalette =
+    [
+        (new(70, 205, 225), new(65, 137, 151), new(75, 225, 235)),
+        (new(238, 92, 92), new(148, 72, 72), new(255, 112, 104)),
+        (new(114, 222, 103), new(75, 145, 72), new(132, 242, 116)),
+        (new(183, 111, 242), new(116, 76, 151), new(205, 132, 255)),
+        (new(250, 187, 67), new(151, 112, 54), new(255, 205, 82)),
+        (new(245, 104, 184), new(151, 73, 118), new(255, 125, 202)),
+        (new(91, 137, 244), new(67, 91, 151), new(112, 158, 255)),
+        (new(226, 224, 100), new(143, 138, 70), new(246, 242, 118))
+    ];
 
     private readonly GraphicsDevice _graphicsDevice;
     private readonly BasicEffect _effect;
     private readonly VertexBuffer _circleBuffer;
     private readonly VertexPositionColor[] _shadedCircleVertices = new VertexPositionColor[CircleSegments * 3];
+    private VertexPositionColor[] _snakeBodyVertices = [];
+    private VertexPositionColor[] _radarLineVertices = new VertexPositionColor[256];
     private readonly Texture2D _backgroundTexture;
     private readonly Texture2D _dotDiscTexture;
     private readonly Texture2D _dotLightAtlas;
@@ -60,14 +76,12 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
         var vertices = new VertexPositionColor[CircleSegments * 3];
         for (var segment = 0; segment < CircleSegments; segment++)
         {
-            var startAngle = MathHelper.TwoPi * segment / CircleSegments;
-            var endAngle = MathHelper.TwoPi * (segment + 1) / CircleSegments;
             var vertexIndex = segment * 3;
             vertices[vertexIndex] = new VertexPositionColor(Vector3.Zero, Color.White);
             vertices[vertexIndex + 1] = new VertexPositionColor(
-                new Vector3(MathF.Cos(startAngle), MathF.Sin(startAngle), 0), Color.White);
+                new Vector3(UnitCircle[segment], 0), Color.White);
             vertices[vertexIndex + 2] = new VertexPositionColor(
-                new Vector3(MathF.Cos(endAngle), MathF.Sin(endAngle), 0), Color.White);
+                new Vector3(UnitCircle[segment + 1], 0), Color.White);
         }
 
         _circleBuffer = new VertexBuffer(
@@ -87,14 +101,23 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
 
     public void SetScreenLayout(ScreenLayout layout) => _layout = layout;
 
+    public void UpdateCameraScale(double sizeScale, double elapsedSeconds) =>
+        _camera.ApproachVisibleWorldHeight(
+            CameraTransform.DefaultVisibleWorldHeight * SnakeGrowthCurve.CameraScaleForBodyScale(sizeScale),
+            elapsedSeconds);
+
     public void Render(
         WorldSnapshot previousSnapshot,
         WorldSnapshot snapshot,
         float interpolationAlpha)
     {
         var layout = _layout ?? throw new InvalidOperationException("Screen layout has not been set.");
-        var cameraX = Lerp(previousSnapshot.Snake.HeadX, snapshot.Snake.HeadX, interpolationAlpha);
-        var cameraY = Lerp(previousSnapshot.Snake.HeadY, snapshot.Snake.HeadY, interpolationAlpha);
+        var previousLocal = previousSnapshot.Snake.Id == snapshot.Snake.Id &&
+                            previousSnapshot.Snake.Generation == snapshot.Snake.Generation
+            ? previousSnapshot.Snake
+            : snapshot.Snake;
+        var cameraX = Lerp(previousLocal.HeadX, snapshot.Snake.HeadX, interpolationAlpha);
+        var cameraY = Lerp(previousLocal.HeadY, snapshot.Snake.HeadY, interpolationAlpha);
         var viewBounds = ConfigureProjection(layout, cameraX, cameraY);
 
         _graphicsDevice.BlendState = BlendState.AlphaBlend;
@@ -103,7 +126,23 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
 
         RenderArena(snapshot.Arena, cameraX, cameraY, viewBounds);
         RenderDots(snapshot.VisibleDots, viewBounds);
-        RenderSnake(previousSnapshot.Snake, snapshot.Snake, interpolationAlpha);
+        var currentSnakes = snapshot.VisibleSnakes ?? [snapshot.Snake];
+        var previousSnakes = previousSnapshot.VisibleSnakes ?? [previousSnapshot.Snake];
+        foreach (var currentSnake in currentSnakes)
+        {
+            if (!currentSnake.IsAlive) continue;
+            var previousSnake = currentSnake;
+            foreach (var candidate in previousSnakes)
+            {
+                if (candidate.Id == currentSnake.Id && candidate.Generation == currentSnake.Generation)
+                {
+                    previousSnake = candidate;
+                    break;
+                }
+            }
+            RenderSnake(previousSnake, currentSnake, interpolationAlpha, viewBounds);
+        }
+        RenderRadar(snapshot, layout);
     }
 
     public void Dispose()
@@ -173,16 +212,14 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
         var vertices = new VertexPositionColorTexture[CircleSegments * 3];
         for (var segment = 0; segment < CircleSegments; segment++)
         {
-            var startAngle = MathHelper.TwoPi * segment / CircleSegments;
-            var endAngle = MathHelper.TwoPi * (segment + 1) / CircleSegments;
             var index = segment * 3;
             vertices[index] = TexturedVertex(centerX, centerY);
             vertices[index + 1] = TexturedVertex(
-                centerX + (Math.Cos(startAngle) * radius),
-                centerY + (Math.Sin(startAngle) * radius));
+                centerX + (UnitCircle[segment].X * radius),
+                centerY + (UnitCircle[segment].Y * radius));
             vertices[index + 2] = TexturedVertex(
-                centerX + (Math.Cos(endAngle) * radius),
-                centerY + (Math.Sin(endAngle) * radius));
+                centerX + (UnitCircle[segment + 1].X * radius),
+                centerY + (UnitCircle[segment + 1].Y * radius));
         }
 
         RenderTexturedTriangles(vertices, CircleSegments);
@@ -207,47 +244,133 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
         _effect.TextureEnabled = false;
     }
 
-    private void RenderSnake(SnakeSnapshot previous, SnakeSnapshot current, float alpha)
+    private void RenderSnake(SnakeSnapshot previous, SnakeSnapshot current, float alpha, ViewBounds view)
     {
+        var style = SnakePalette[Math.Abs(current.StyleId) % SnakePalette.Length];
         var bodyCount = Math.Min(previous.Body.Count, current.Body.Count);
         var headX = Lerp(previous.HeadX, current.HeadX, alpha);
         var headY = Lerp(previous.HeadY, current.HeadY, alpha);
+        var headRadius = Lerp(previous.HeadRadius, current.HeadRadius, alpha);
 
-        // A small common shadow around the silhouette helps the overlapping discs
-        // read as one continuous body instead of unrelated circles.
-        for (var index = bodyCount - 1; index >= 0; index--)
-        {
-            var oldNode = previous.Body[index];
-            var node = current.Body[index];
-            RenderBodyShadow(
-                Lerp(oldNode.X, node.X, alpha),
-                Lerp(oldNode.Y, node.Y, alpha),
-                node.Radius);
-        }
-        RenderBodyShadow(headX, headY, current.HeadRadius);
+        EnsureSnakeCapacity(bodyCount);
+        var bodyVertexCount = 0;
+        var headVisible = CircleIntersectsView(headX, headY, headRadius * 1.1, view);
 
         for (var index = bodyCount - 1; index >= 0; index--)
         {
             var oldNode = previous.Body[index];
             var node = current.Body[index];
-            RenderShadedCircle(
-                Lerp(oldNode.X, node.X, alpha),
-                Lerp(oldNode.Y, node.Y, alpha),
-                node.Radius,
-                new Color(70, 205, 225),
-                new Color(65, 137, 151));
+            var x = Lerp(oldNode.X, node.X, alpha);
+            var y = Lerp(oldNode.Y, node.Y, alpha);
+            var radius = Lerp(oldNode.Radius, node.Radius, alpha);
+            if (!CircleIntersectsView(x, y, radius * 1.1, view)) continue;
+            AddSolidCircle(
+                _snakeBodyVertices,
+                ref bodyVertexCount,
+                x + (radius * 0.025),
+                y - (radius * 0.030),
+                radius * 1.075,
+                SnakeShadowColor);
+            AddShadedCircle(
+                _snakeBodyVertices,
+                ref bodyVertexCount,
+                x,
+                y,
+                radius,
+                style.Body,
+                style.Rim);
         }
+        DrawColoredTriangles(_snakeBodyVertices, bodyVertexCount);
+
+        if (!headVisible) return;
 
         var headingX = Lerp(previous.HeadingX, current.HeadingX, alpha);
         var headingY = Lerp(previous.HeadingY, current.HeadingY, alpha);
         var headColor = current.IsBoosting
             ? new Color(255, 190, 65)
-            : new Color(75, 225, 235);
+            : style.Head;
         var headRimColor = current.IsBoosting
             ? new Color(151, 105, 54)
-            : new Color(69, 145, 155);
-        RenderShadedCircle(headX, headY, current.HeadRadius, headColor, headRimColor);
-        RenderEyes(headX, headY, headingX, headingY, current.HeadRadius);
+            : style.Rim;
+        RenderBodyShadow(headX, headY, headRadius);
+        RenderShadedCircle(headX, headY, headRadius, headColor, headRimColor);
+        RenderEyes(headX, headY, headingX, headingY, headRadius);
+    }
+
+    private static bool CircleIntersectsView(double x, double y, double radius, ViewBounds view) =>
+        x + radius >= view.Left && x - radius <= view.Right &&
+        y + radius >= view.Bottom && y - radius <= view.Top;
+
+    private void EnsureSnakeCapacity(int bodyCount)
+    {
+        var bodyVertices = bodyCount * CircleSegments * 3 * 3;
+        if (_snakeBodyVertices.Length < bodyVertices)
+        {
+            Array.Resize(ref _snakeBodyVertices, Math.Max(bodyVertices, Math.Max(2048, _snakeBodyVertices.Length * 2)));
+        }
+    }
+
+    private static void AddSolidCircle(
+        VertexPositionColor[] vertices,
+        ref int vertexCount,
+        double x,
+        double y,
+        double radius,
+        Color color)
+    {
+        for (var segment = 0; segment < CircleSegments; segment++)
+        {
+            vertices[vertexCount++] = new VertexPositionColor(new Vector3((float)x, (float)y, 0), color);
+            vertices[vertexCount++] = new VertexPositionColor(
+                new Vector3((float)(x + (UnitCircle[segment].X * radius)), (float)(y + (UnitCircle[segment].Y * radius)), 0),
+                color);
+            vertices[vertexCount++] = new VertexPositionColor(
+                new Vector3((float)(x + (UnitCircle[segment + 1].X * radius)), (float)(y + (UnitCircle[segment + 1].Y * radius)), 0),
+                color);
+        }
+    }
+
+    private static void AddShadedCircle(
+        VertexPositionColor[] vertices,
+        ref int vertexCount,
+        double x,
+        double y,
+        double radius,
+        Color centerColor,
+        Color rimColor)
+    {
+        AddSolidCircle(vertices, ref vertexCount, x, y, radius, Color.Lerp(rimColor, new Color(160, 164, 168), 0.58f));
+
+        var innerRadius = radius * 0.90;
+        var highlightX = x - (radius * 0.18);
+        var highlightY = y + (radius * 0.22);
+        var highlightColor = Color.Lerp(centerColor, Color.White, 0.32f);
+        for (var segment = 0; segment < CircleSegments; segment++)
+        {
+            vertices[vertexCount++] = new VertexPositionColor(
+                new Vector3((float)highlightX, (float)highlightY, 0), highlightColor);
+            vertices[vertexCount++] = new VertexPositionColor(
+                new Vector3((float)(x + (UnitCircle[segment].X * innerRadius)), (float)(y + (UnitCircle[segment].Y * innerRadius)), 0),
+                rimColor);
+            vertices[vertexCount++] = new VertexPositionColor(
+                new Vector3((float)(x + (UnitCircle[segment + 1].X * innerRadius)), (float)(y + (UnitCircle[segment + 1].Y * innerRadius)), 0),
+                rimColor);
+        }
+    }
+
+    private void DrawColoredTriangles(VertexPositionColor[] vertices, int vertexCount)
+    {
+        if (vertexCount == 0) return;
+        _effect.TextureEnabled = false;
+        _effect.World = Matrix.Identity;
+        _effect.DiffuseColor = Vector3.One;
+        _effect.Alpha = 1;
+        _graphicsDevice.SetVertexBuffer(null);
+        foreach (var pass in _effect.CurrentTechnique.Passes)
+        {
+            pass.Apply();
+            _graphicsDevice.DrawUserPrimitives(PrimitiveType.TriangleList, vertices, 0, vertexCount / 3);
+        }
     }
 
     private void RenderDots(IReadOnlyList<DotSnapshot> dots, ViewBounds view)
@@ -269,6 +392,7 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
             }
 
             var paletteIndex = (int)(unchecked((ulong)dot.Id) % (ulong)DotPalette.Length);
+            var opacity = (float)Math.Clamp(dot.Opacity, 0, 1);
             var atlasLeft = ((paletteIndex * DotTextureSize) + 0.5f) / _dotLightAtlas.Width;
             var atlasRight = (((paletteIndex + 1) * DotTextureSize) - 0.5f) / _dotLightAtlas.Width;
             AddDotQuad(
@@ -277,7 +401,7 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
                 dot.X,
                 dot.Y,
                 renderRadius,
-                Color.White,
+                Color.White * opacity,
                 0,
                 1);
             AddDotQuad(
@@ -286,7 +410,7 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
                 dot.X,
                 dot.Y,
                 dot.Radius,
-                new Color(18, 22, 27),
+                new Color(18, 22, 27) * opacity,
                 0,
                 1);
             AddDotQuad(
@@ -295,7 +419,7 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
                 dot.X,
                 dot.Y,
                 dot.Radius,
-                Color.White,
+                Color.White * opacity,
                 atlasLeft,
                 atlasRight);
         }
@@ -438,10 +562,111 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
     private void RenderBodyShadow(double x, double y, double radius)
     {
         RenderCircle(
-            x + (radius * 0.035),
-            y - (radius * 0.045),
-            radius * 1.055,
-            new Color(58, 61, 65));
+            x + (radius * 0.025),
+            y - (radius * 0.030),
+            radius * 1.075,
+            SnakeShadowColor);
+    }
+
+    private void RenderRadar(WorldSnapshot snapshot, ScreenLayout layout)
+    {
+        var scale = Math.Min(layout.ViewportWidth, layout.ViewportHeight) / 720.0;
+        var outerRadius = 58.0 * scale;
+        var innerRadius = outerRadius - Math.Max(2.0, 3.0 * scale);
+        var margin = 16.0 * scale;
+        var centerX = layout.SafeArea.Left + margin + outerRadius;
+        var centerY = layout.SafeArea.Top + margin + outerRadius;
+
+        _effect.View = Matrix.Identity;
+        _effect.Projection = Matrix.CreateOrthographicOffCenter(
+            0,
+            layout.ViewportWidth,
+            layout.ViewportHeight,
+            0,
+            0,
+            1);
+
+        RenderCircle(centerX, centerY, outerRadius, new Color(184, 190, 194));
+        RenderCircle(centerX, centerY, innerRadius, new Color(11, 18, 23));
+
+        var axisColor = new Color(72, 82, 88);
+        var radarLineCount = 0;
+        AddRadarLine(ref radarLineCount, centerX - innerRadius, centerY, centerX + innerRadius, centerY, axisColor);
+        AddRadarLine(ref radarLineCount, centerX, centerY - innerRadius, centerX, centerY + innerRadius, axisColor);
+
+        var radarSnakes = snapshot.RadarSnakes;
+        if (radarSnakes is null || snapshot.Arena.PlayableRadius <= 0)
+        {
+            DrawRadarLines(radarLineCount);
+            return;
+        }
+
+        var mapRadius = innerRadius - (4.0 * scale);
+        var mapScale = mapRadius / snapshot.Arena.PlayableRadius;
+        var bodyRadius = Math.Max(1.1, 1.25 * scale);
+        foreach (var snake in radarSnakes)
+        {
+            if (snake.Body.Count > 0)
+            {
+                var previousX = centerX + ((snake.HeadX - snapshot.Arena.CenterX) * mapScale);
+                var previousY = centerY - ((snake.HeadY - snapshot.Arena.CenterY) * mapScale);
+                foreach (var node in snake.Body)
+                {
+                    var nodeX = centerX + ((node.X - snapshot.Arena.CenterX) * mapScale);
+                    var nodeY = centerY - ((node.Y - snapshot.Arena.CenterY) * mapScale);
+                    AddRadarLine(ref radarLineCount, previousX, previousY, nodeX, nodeY, new Color(145, 151, 156));
+                    previousX = nodeX;
+                    previousY = nodeY;
+                }
+            }
+
+            if (snake.IsHuman)
+            {
+                continue;
+            }
+            RenderCircle(
+                centerX + ((snake.HeadX - snapshot.Arena.CenterX) * mapScale),
+                centerY - ((snake.HeadY - snapshot.Arena.CenterY) * mapScale),
+                bodyRadius * 1.25,
+                new Color(178, 182, 185));
+        }
+
+        DrawRadarLines(radarLineCount);
+
+        var player = radarSnakes.FirstOrDefault(static snake => snake.IsHuman);
+        if (!player.IsHuman)
+        {
+            return;
+        }
+        var playerX = centerX + ((player.HeadX - snapshot.Arena.CenterX) * mapScale);
+        var playerY = centerY - ((player.HeadY - snapshot.Arena.CenterY) * mapScale);
+        RenderCircle(playerX, playerY, Math.Max(3.4, 3.8 * scale), new Color(255, 220, 62));
+        RenderCircle(playerX, playerY, Math.Max(2.2, 2.5 * scale), new Color(55, 235, 245));
+    }
+
+    private void AddRadarLine(ref int vertexCount, double startX, double startY, double endX, double endY, Color color)
+    {
+        if (vertexCount + 2 > _radarLineVertices.Length)
+        {
+            Array.Resize(ref _radarLineVertices, _radarLineVertices.Length * 2);
+        }
+        _radarLineVertices[vertexCount++] = new VertexPositionColor(new Vector3((float)startX, (float)startY, 0), color);
+        _radarLineVertices[vertexCount++] = new VertexPositionColor(new Vector3((float)endX, (float)endY, 0), color);
+    }
+
+    private void DrawRadarLines(int vertexCount)
+    {
+        if (vertexCount == 0) return;
+        _effect.TextureEnabled = false;
+        _effect.World = Matrix.Identity;
+        _effect.DiffuseColor = Vector3.One;
+        _effect.Alpha = 1;
+        _graphicsDevice.SetVertexBuffer(null);
+        foreach (var pass in _effect.CurrentTechnique.Passes)
+        {
+            pass.Apply();
+            _graphicsDevice.DrawUserPrimitives(PrimitiveType.LineList, _radarLineVertices, 0, vertexCount / 2);
+        }
     }
 
     private void RenderCircle(double x, double y, double radius, Color color)
@@ -450,7 +675,7 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
         _effect.World = Matrix.CreateScale((float)radius, (float)radius, 1) *
                         Matrix.CreateTranslation((float)x, (float)y, 0);
         _effect.DiffuseColor = color.ToVector3();
-        _effect.Alpha = 1;
+        _effect.Alpha = color.A / 255f;
         _graphicsDevice.SetVertexBuffer(_circleBuffer);
 
         foreach (var pass in _effect.CurrentTechnique.Passes)
@@ -475,22 +700,20 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
         var highlightColor = Color.Lerp(centerColor, Color.White, 0.32f);
         for (var segment = 0; segment < CircleSegments; segment++)
         {
-            var startAngle = MathHelper.TwoPi * segment / CircleSegments;
-            var endAngle = MathHelper.TwoPi * (segment + 1) / CircleSegments;
             var vertexIndex = segment * 3;
             _shadedCircleVertices[vertexIndex] = new VertexPositionColor(
                 new Vector3((float)highlightX, (float)highlightY, 0),
                 highlightColor);
             _shadedCircleVertices[vertexIndex + 1] = new VertexPositionColor(
                 new Vector3(
-                    (float)(x + (Math.Cos(startAngle) * innerRadius)),
-                    (float)(y + (Math.Sin(startAngle) * innerRadius)),
+                    (float)(x + (UnitCircle[segment].X * innerRadius)),
+                    (float)(y + (UnitCircle[segment].Y * innerRadius)),
                     0),
                 rimColor);
             _shadedCircleVertices[vertexIndex + 2] = new VertexPositionColor(
                 new Vector3(
-                    (float)(x + (Math.Cos(endAngle) * innerRadius)),
-                    (float)(y + (Math.Sin(endAngle) * innerRadius)),
+                    (float)(x + (UnitCircle[segment + 1].X * innerRadius)),
+                    (float)(y + (UnitCircle[segment + 1].Y * innerRadius)),
                     0),
                 rimColor);
         }
@@ -578,6 +801,17 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
     {
         var amount = Math.Clamp((value - from) / (to - from), 0, 1);
         return amount * amount * (3 - (2 * amount));
+    }
+
+    private static Vector2[] CreateUnitCircle()
+    {
+        var points = new Vector2[CircleSegments + 1];
+        for (var segment = 0; segment <= CircleSegments; segment++)
+        {
+            var angle = MathHelper.TwoPi * segment / CircleSegments;
+            points[segment] = new Vector2(MathF.Cos(angle), MathF.Sin(angle));
+        }
+        return points;
     }
 
     private static double Lerp(double from, double to, float amount) =>

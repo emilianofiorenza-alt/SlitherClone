@@ -12,9 +12,9 @@ public sealed record SnakeSimulationSettings
 
     public double BoostDeceleration { get; init; } = 24.0;
 
-    public double MaxTurnRateDegrees { get; init; } = 260.0;
+    public double MaxTurnRateDegrees { get; init; } = 320.0;
 
-    public double BoostMaxTurnRateDegrees { get; init; } = 230.0;
+    public double BoostMaxTurnRateDegrees { get; init; } = 290.0;
 
     public double HeadRadius { get; init; } = 0.23684375;
 
@@ -25,6 +25,10 @@ public sealed record SnakeSimulationSettings
     public int InitialBodyNodes { get; init; } = 5;
 
     public int ConstraintIterations { get; init; } = 2;
+
+    public double BodyTrailRelaxationPerSecond { get; init; } = 5.5;
+
+    public int BodyTrailRelaxationSpan { get; init; } = 4;
 
     public double ArenaRadius { get; init; } = 100.0;
 

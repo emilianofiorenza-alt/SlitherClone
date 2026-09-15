@@ -11,7 +11,7 @@ public sealed class SlitherGame : Game
 {
     private readonly GraphicsDeviceManager _graphics;
     private readonly FixedStepAccumulator _clock = new();
-    private readonly ISimulationEndpoint _simulation = new LocalSimulationEndpoint();
+    private readonly LocalSimulationEndpoint _simulation = new();
 
     private PlatformCommandSource? _commands;
     private PrimitiveSnapshotRenderer? _renderer;
@@ -22,6 +22,9 @@ public sealed class SlitherGame : Game
     private double _metricsTime;
     private int _renderedFrames;
     private bool _contentLoaded;
+#if !ANDROID
+    private KeyboardState _previousKeyboard;
+#endif
 
     public SlitherGame(int? preferredWidth = null, int? preferredHeight = null)
     {
@@ -43,7 +46,12 @@ public sealed class SlitherGame : Game
         };
 #endif
 
-        IsFixedTimeStep = false;
+        // A stable 60 Hz cadence maps exactly to two refresh intervals on the
+        // 120 Hz Android display and avoids the visible judder of an uncapped
+        // render rate fluctuating between roughly 60 and 100 FPS.
+        IsFixedTimeStep = true;
+        TargetElapsedTime = TimeSpan.FromSeconds(1.0 / 60.0);
+        _graphics.SynchronizeWithVerticalRetrace = true;
         IsMouseVisible = true;
     }
 
@@ -61,11 +69,20 @@ public sealed class SlitherGame : Game
     protected override void Update(GameTime gameTime)
     {
 #if !ANDROID
-        if (Keyboard.GetState().IsKeyDown(Keys.Escape))
+        var keyboard = Keyboard.GetState();
+        if (keyboard.IsKeyDown(Keys.Escape))
         {
             Exit();
             return;
         }
+        if (Pressed(keyboard, Keys.F1)) _simulation.ConfigurePopulation(PopulationMode.InteractionTest, 10);
+        if (Pressed(keyboard, Keys.F2)) _simulation.ConfigurePopulation(PopulationMode.InteractionTest, 20);
+        if (Pressed(keyboard, Keys.F3)) _simulation.ConfigurePopulation(PopulationMode.StressTest, 50);
+        if (Pressed(keyboard, Keys.F4)) _simulation.ConfigurePopulation(PopulationMode.StressTest, 100);
+        if (Pressed(keyboard, Keys.F5)) _simulation.ConfigurePopulation(PopulationMode.PopulationTest, 20);
+        if (Pressed(keyboard, Keys.F6)) _simulation.ConfigureGameplayMode(GameplayMode.DebugLong);
+        if (Pressed(keyboard, Keys.F7)) _simulation.ConfigureGameplayMode(GameplayMode.Standard);
+        _previousKeyboard = keyboard;
 #endif
 
         RefreshScreenLayout();
@@ -85,6 +102,7 @@ public sealed class SlitherGame : Game
 
     protected override void Draw(GameTime gameTime)
     {
+        _renderer!.UpdateCameraScale(_snapshot.Snake.SizeScale, gameTime.ElapsedGameTime.TotalSeconds);
         _renderer!.Render(_previousSnapshot, _snapshot, _clock.InterpolationAlpha);
         _controlsRenderer!.Render(
             _screenLayout!,
@@ -132,17 +150,27 @@ public sealed class SlitherGame : Game
 
         var renderHz = _renderedFrames / _metricsTime;
         var snake = _snapshot.Snake;
-        var message = $"Slither Step 2D | {renderHz:F0} FPS | tick {_snapshot.SimulationTick} | " +
-                      $"body {snake.Body.Count} | size {snake.Size} | energy {snake.Energy}/5 | " +
-                      $"dots {_snapshot.VisibleDots.Count} ({_snapshot.CollectedDotCount} collected) | " +
+        var metrics = _snapshot.Metrics;
+        var message = $"Slither Step 3 | {renderHz:F0} FPS | tick {_snapshot.SimulationTick} | " +
+                      $"snakes {metrics.AliveSnakes}/{_snapshot.ConfiguredBotCount + 1} visible {_snapshot.VisibleSnakes?.Count ?? 1} | " +
+                      $"nodes {metrics.TotalBodyNodes} | score {snake.MatchScore} | " +
+                      $"dots {_snapshot.VisibleDots.Count} | collisions {metrics.CollisionCandidates}/{metrics.NarrowPhaseTests} | " +
+                      $"deaths {metrics.TotalDeaths} respawns {metrics.TotalRespawns} | " +
                       $"{(snake.IsBoosting ? "BOOST" : $"speed {snake.CurrentSpeed:F0}")}";
         Debug.WriteLine(message);
-#if !ANDROID
+#if ANDROID
+        global::Android.Util.Log.Info("SlitherMetrics", message);
+#else
         Window.Title = message;
 #endif
         _metricsTime = 0;
         _renderedFrames = 0;
     }
+
+#if !ANDROID
+    private bool Pressed(KeyboardState keyboard, Keys key) =>
+        keyboard.IsKeyDown(key) && !_previousKeyboard.IsKeyDown(key);
+#endif
 
     private void RefreshScreenLayout(bool force = false)
     {
