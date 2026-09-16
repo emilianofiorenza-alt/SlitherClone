@@ -21,29 +21,32 @@ public sealed class Step3SimulationTests
     }
 
     [Theory]
-    [InlineData(0, 0.8)]
-    [InlineData(50, 0.8)]
-    [InlineData(250, 0.9)]
-    [InlineData(500, 1.025)]
-    [InlineData(1000, 1.275)]
+    [InlineData(0, 1.1)]
+    [InlineData(50, 1.1)]
+    [InlineData(250, 1.1692307692307693)]
+    [InlineData(500, 1.255769230769231)]
+    [InlineData(1000, 1.4288461538461537)]
     [InlineData(2000, 1.775)]
-    [InlineData(3000, 2.275)]
-    [InlineData(5000, 3.275)]
-    [InlineData(10000, 4.0)]
-    [InlineData(100000, 4.0)]
-    public void GrowthCurveMatchesLinearSamplesAndMaximum(int score, double expectedScale)
+    [InlineData(3000, 2.1933372996730762)]
+    [InlineData(5000, 2.847203952283074)]
+    [InlineData(10000, 3.7816977986346445)]
+    [InlineData(100000, 4.49999978026969)]
+    public void GrowthCurveMatchesCurrentLinearAndAsymptoticSamples(int score, double expectedScale)
     {
         Assert.Equal(expectedScale, SnakeGrowthCurve.ForScore(score), 10);
     }
 
     [Fact]
-    public void GrowthCurveIsLinearUntilMaximum()
+    public void GrowthCurveIsMonotonicAndApproachesMaximumAsymptotically()
     {
-        var earlyIncrease = SnakeGrowthCurve.ForScore(1000) - SnakeGrowthCurve.ForScore(50);
-        var lateIncrease = SnakeGrowthCurve.ForScore(3000) - SnakeGrowthCurve.ForScore(2050);
+        var samples = new[] { 50, 250, 500, 1000, 2000, 3000, 5000, 10_000, 100_000 }
+            .Select(SnakeGrowthCurve.ForScore)
+            .ToArray();
 
-        Assert.Equal(earlyIncrease, lateIncrease, 10);
-        Assert.Equal(SnakeGrowthCurve.MaximumScale, SnakeGrowthCurve.ForScore(100_000), 10);
+        for (var index = 1; index < samples.Length; index++)
+            Assert.True(samples[index] > samples[index - 1]);
+        Assert.True(samples[^1] < SnakeGrowthCurve.MaximumScale);
+        Assert.InRange(SnakeGrowthCurve.MaximumScale - samples[^1], 0, 0.000001);
     }
 
     [Fact]
@@ -226,6 +229,82 @@ public sealed class Step3SimulationTests
         Assert.Equal(3, drop.Energy);
         Assert.Equal((ulong)120, drop.FadeInStartTick);
         Assert.Equal((ulong)21, drop.FadeInDurationTicks);
+    }
+
+    [Fact]
+    public void BoostReleasesHalfPercentAsAContinuousTailSequence()
+    {
+        var settings = WorldSimulationSettings.Default with
+        {
+            InitialMatchScore = 2000,
+            InitialBotMinimumScore = 2000,
+            InitialBotMaximumScore = 2000,
+            InitialBotCount = 0
+        };
+        var simulation = new WorldSimulation(worldSettings: settings);
+
+        var intervalTicks = (int)Math.Round(
+            settings.BoostEnergyReleaseIntervalSeconds * SimulationSettings.TicksPerSecond);
+        for (var tick = 0; tick < intervalTicks; tick++)
+            simulation.Step(SimulationSettings.FixedDeltaTime, 1, 0, true, true);
+
+        var afterFirstPulse = simulation.CaptureState();
+        var releasedEnergy = (int)afterFirstPulse.Metrics.ReleasedMass;
+        Assert.InRange(releasedEnergy, 10, 11);
+        Assert.Single(afterFirstPulse.ActiveDots.Where(dot => dot.Id < 0));
+
+        for (var tick = 0; tick < intervalTicks; tick++)
+            simulation.Step(SimulationSettings.FixedDeltaTime, 1, 0, true, false);
+
+        var boostDots = simulation.CaptureState().ActiveDots.Where(dot => dot.Id < 0).ToArray();
+        Assert.Equal(releasedEnergy, boostDots.Sum(dot => dot.Energy));
+        Assert.Equal(4, boostDots.Length);
+        Assert.All(boostDots, dot => Assert.InRange(dot.Energy, 1, settings.BoostMaximumDotEnergy));
+
+        for (var tick = 0; tick < SimulationSettings.TicksPerSecond; tick++)
+            simulation.Step(SimulationSettings.FixedDeltaTime, 1, 0, true, false);
+        Assert.Equal(releasedEnergy, simulation.CaptureState().Metrics.ReleasedMass);
+    }
+
+    [Fact]
+    public void BoostIsUnavailableAtOrBelowMinimumScore()
+    {
+        var simulation = new WorldSimulation(worldSettings: WorldSimulationSettings.Default with
+        {
+            InitialBotCount = 0
+        });
+
+        var intervalTicks = (int)Math.Round(
+            WorldSimulationSettings.Default.BoostEnergyReleaseIntervalSeconds * SimulationSettings.TicksPerSecond);
+        for (var tick = 0; tick < intervalTicks; tick++)
+            simulation.Step(SimulationSettings.FixedDeltaTime, 1, 0, true, true);
+
+        var state = simulation.CaptureState();
+        Assert.Equal(50, state.VisibleSnakes.Single().MatchScore);
+        Assert.False(state.VisibleSnakes.Single().Motion.IsBoosting);
+        Assert.Empty(state.ActiveDots.Where(dot => dot.Id < 0));
+    }
+
+    [Fact]
+    public void BoostStopsImmediatelyWhenAReleaseReachesMinimumScore()
+    {
+        var settings = WorldSimulationSettings.Default with
+        {
+            InitialMatchScore = 51,
+            InitialBotMinimumScore = 51,
+            InitialBotMaximumScore = 51,
+            InitialBotCount = 0
+        };
+        var simulation = new WorldSimulation(worldSettings: settings);
+        var intervalTicks = (int)Math.Round(
+            settings.BoostEnergyReleaseIntervalSeconds * SimulationSettings.TicksPerSecond);
+
+        for (var tick = 0; tick < intervalTicks; tick++)
+            simulation.Step(SimulationSettings.FixedDeltaTime, 1, 0, true, true);
+
+        var state = simulation.CaptureState().VisibleSnakes.Single();
+        Assert.Equal(settings.BoostMinimumScore, state.MatchScore);
+        Assert.False(state.Motion.IsBoosting);
     }
 
     [Fact]
@@ -516,5 +595,30 @@ public sealed class Step3SimulationTests
         // Both worlds consume one global spawn budget. Lazy cell activation may differ,
         // therefore the invariant is verified through the fixed configuration itself.
         Assert.Equal(one.Settings.DynamicSpawnCount, many.Settings.DynamicSpawnCount);
+    }
+
+    [Fact]
+    public void WorldAcceptsCommandsForMultiplePlayersAndCapturesPerObserver()
+    {
+        var world = new WorldSimulation(worldSettings: WorldSimulationSettings.Default with
+        {
+            InitialBotCount = 0
+        });
+        var secondPlayer = world.AddPlayer(new WorldVector(4, 0), new WorldVector(0, 1));
+        var controls = new Dictionary<SnakeId, SnakeControl>
+        {
+            [world.LocalPlayerId] = new SnakeControl(1, 0, true, false),
+            [secondPlayer] = new SnakeControl(-1, 0, true, false)
+        };
+
+        for (var tick = 0; tick < 30; tick++)
+            world.Step(SimulationSettings.FixedDeltaTime, controls);
+
+        var secondView = world.CaptureState(secondPlayer);
+        var secondState = Assert.Single(secondView.VisibleSnakes, snake => snake.Id == secondPlayer);
+        Assert.Equal(secondPlayer, secondView.LocalSnakeId);
+        Assert.True(secondState.Motion.Heading.X < 0);
+        Assert.True(world.RemovePlayer(secondPlayer));
+        Assert.Throws<ArgumentOutOfRangeException>(() => world.CaptureState(secondPlayer));
     }
 }

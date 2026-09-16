@@ -10,7 +10,8 @@ namespace Slither.Android
     [Activity(
         Label = "@string/app_name",
         MainLauncher = true,
-        Icon = "@drawable/icon",
+        Icon = "@mipmap/appicon",
+        RoundIcon = "@mipmap/appicon",
         AlwaysRetainTaskState = true,
         LaunchMode = LaunchMode.SingleInstance,
         ScreenOrientation = ScreenOrientation.SensorLandscape,

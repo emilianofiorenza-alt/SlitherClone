@@ -67,6 +67,8 @@ public sealed class SnakeSimulation
 
     public double BodySpacing => _settings.BodySpacing * _sizeScale;
 
+    public void StopBoost() => _isBoosting = false;
+
     public void SetSizeScale(double sizeScale)
     {
         if (!double.IsFinite(sizeScale) || sizeScale <= 0)

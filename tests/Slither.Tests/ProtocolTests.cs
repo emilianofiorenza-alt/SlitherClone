@@ -25,4 +25,20 @@ public sealed class ProtocolTests
         Assert.Empty(mutableProperties);
         Assert.True(typeof(WorldSnapshot).IsValueType);
     }
+
+    [Fact]
+    public void SnapshotCarriesSchemaAndInputAcknowledgement()
+    {
+        var snapshot = new WorldSnapshot(
+            42,
+            default,
+            default,
+            Array.Empty<DotSnapshot>(),
+            0,
+            0,
+            LastProcessedCommandSequence: 17);
+
+        Assert.Equal(ProtocolVersion.Current, snapshot.SchemaVersion);
+        Assert.Equal(17u, snapshot.LastProcessedCommandSequence);
+    }
 }

@@ -6,7 +6,7 @@ public sealed record SnakeSimulationSettings
 
     public double BaseSpeed { get; init; } = 3.0;
 
-    public double BoostSpeed { get; init; } = 9.0;
+    public double BoostSpeed { get; init; } = 7.5;
 
     public double BoostAcceleration { get; init; } = 18.0;
 
@@ -18,7 +18,7 @@ public sealed record SnakeSimulationSettings
 
     public double InputFilterTurnRateDegrees { get; init; } = 720.0;
 
-    public double SizeTurnPenalty { get; init; } = 0.35;
+    public double SizeTurnPenalty { get; init; } = 0.30;
 
     public double HeadRadius { get; init; } = 0.23684375;
 

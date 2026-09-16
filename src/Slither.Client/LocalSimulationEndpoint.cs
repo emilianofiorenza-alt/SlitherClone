@@ -6,20 +6,24 @@ namespace Slither.Client;
 public sealed class LocalSimulationEndpoint : ISimulationEndpoint
 {
     private readonly WorldSimulation _simulation = new();
+    private readonly Dictionary<SnakeId, SnakeControl> _playerControls = [];
     private PlayerCommand _pendingCommand;
+    private uint _lastProcessedCommandSequence;
     private IReadOnlyList<RadarSnakeState>? _radarSource;
     private IReadOnlyList<RadarSnakeSnapshot> _radarSnapshots = Array.Empty<RadarSnakeSnapshot>();
+    private double _viewportAspectRatio = 16.0 / 9.0;
 
     public void Submit(in PlayerCommand command) => _pendingCommand = command;
 
     public void Step(double fixedDeltaTime)
     {
-        _simulation.Step(
-            fixedDeltaTime,
+        _playerControls[_simulation.LocalPlayerId] = new SnakeControl(
             _pendingCommand.TargetDirectionX,
             _pendingCommand.TargetDirectionY,
             _pendingCommand.HasDirection,
             _pendingCommand.Boost);
+        _simulation.Step(fixedDeltaTime, _playerControls);
+        _lastProcessedCommandSequence = _pendingCommand.Sequence;
     }
 
     public void ConfigurePopulation(PopulationMode mode, int botCount) =>
@@ -28,9 +32,16 @@ public sealed class LocalSimulationEndpoint : ISimulationEndpoint
     public void ConfigureGameplayMode(GameplayMode mode) =>
         _simulation.ConfigureGameplayMode(mode);
 
+    public void ConfigureViewport(int width, int height)
+    {
+        if (width > 0 && height > 0)
+            _viewportAspectRatio = width / (double)height;
+    }
+
     public WorldSnapshot CaptureSnapshot()
     {
-        var state = _simulation.CaptureState();
+        var state = _simulation.CaptureState(_simulation.LocalPlayerId, _viewportAspectRatio);
+        var localEntity = state.VisibleSnakes.First(snake => snake.Id == state.LocalSnakeId);
         var snakes = new SnakeSnapshot[state.VisibleSnakes.Count];
         for (var snakeIndex = 0; snakeIndex < snakes.Length; snakeIndex++)
             snakes[snakeIndex] = MapSnake(state.VisibleSnakes[snakeIndex]);
@@ -104,7 +115,16 @@ public sealed class LocalSimulationEndpoint : ISimulationEndpoint
                 state.Metrics.SnapshotMilliseconds),
             state.ConfiguredBotCount,
             (int)state.PopulationMode,
-            _radarSnapshots);
+            _radarSnapshots,
+            localEntity.LifeState == SnakeLifeState.Alive
+                ? 0.0
+                : Math.Clamp(
+                    (_simulation.Settings.PlayerDeathFadeSeconds - localEntity.RespawnTime) /
+                    _simulation.Settings.PlayerDeathFadeSeconds,
+                    0,
+                    1),
+            _lastProcessedCommandSequence,
+            ProtocolVersion.Current);
     }
 
     private SnakeSnapshot MapSnake(SnakeEntityState entity)

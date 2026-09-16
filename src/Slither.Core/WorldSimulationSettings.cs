@@ -12,6 +12,10 @@ public sealed record WorldSimulationSettings
 
     public int ActiveCellRadius { get; init; } = 2;
 
+    public double DotViewportPreloadMargin { get; init; } = 4.0;
+
+    public double NewDotFadeInSeconds { get; init; } = 0.30;
+
     public double SmallDotRadius { get; init; } = 0.13;
 
     public double MediumDotRadius { get; init; } = 0.195;
@@ -35,6 +39,20 @@ public sealed record WorldSimulationSettings
     public int GrowthPerDot { get; init; } = 1;
 
     public int GrowthMassPerSegment { get; init; } = 5;
+
+    public double BoostEnergyReleaseFraction { get; init; } = 0.005;
+
+    public double BoostEnergyReleaseIntervalSeconds { get; init; } = 0.30;
+
+    public int BoostMinimumScore { get; init; } = 50;
+
+    public int BoostMaximumDotEnergy { get; init; } = 3;
+
+    public double BoostDropTrailSpacingScale { get; init; } = 1.35;
+
+    public double BoostDropOrthogonalSpreadScale { get; init; } = 1.0;
+
+    public double BoostDropFadeInSeconds { get; init; } = 0.10;
 
     public int InitialMatchScore { get; init; } = 50;
 
@@ -90,9 +108,9 @@ public sealed record WorldSimulationSettings
 
     public double CollisionGridCellSize { get; init; } = 2.0;
 
-    public double HeadCollisionRadiusScale { get; init; } = 0.90;
+    public double HeadCollisionRadiusScale { get; init; } = 1.0;
 
-    public double BodyCollisionRadiusScale { get; init; } = 0.90;
+    public double BodyCollisionRadiusScale { get; init; } = 1.0;
 
     public bool HeadToHeadCollisionEnabled { get; init; } = true;
 
@@ -100,7 +118,9 @@ public sealed record WorldSimulationSettings
 
     public double DropFraction { get; init; } = 0.80;
 
-    public double DeathDropRadiusScale { get; init; } = 1.20;
+    public double DeathDropRadiusScale { get; init; } = 1.45;
+
+    public double DeathDropCountScale { get; init; } = 0.70;
 
     public double DeathDropSmallProbability { get; init; } = 0.20;
 
@@ -110,15 +130,17 @@ public sealed record WorldSimulationSettings
 
     public double DeathDropMainMinimumRadiusScale { get; init; } = 0.88;
 
-    public double DeathDropLongitudinalSpreadScale { get; init; } = 0.35;
+    public double DeathDropLongitudinalSpreadScale { get; init; } = 0.42;
 
-    public double DeathDropOrthogonalSpreadScale { get; init; } = 1.0;
+    public double DeathDropOrthogonalSpreadScale { get; init; } = 1.10;
 
     public double DeathDropFadeInSeconds { get; init; } = 0.35;
 
     public double BotRespawnSeconds { get; init; } = 1.0;
 
-    public double PlayerRespawnSeconds { get; init; } = 1.5;
+    public double PlayerDeathObservationSeconds { get; init; } = 3.0;
+
+    public double PlayerDeathFadeSeconds { get; init; } = 0.65;
 
     public double RespawnHeadClearance { get; init; } = 6.0;
 

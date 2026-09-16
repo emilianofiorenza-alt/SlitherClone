@@ -4,7 +4,6 @@ namespace Slither.Core;
 
 public sealed class WorldSimulation
 {
-    private const int HumanSnakeId = 1;
     private readonly WorldSimulationSettings _settings;
     private readonly SnakeSimulationSettings _snakeSettings;
     private readonly DotField _dots;
@@ -27,6 +26,8 @@ public sealed class WorldSimulation
     private IReadOnlyList<RadarSnakeState> _cachedRadarSnakes = Array.Empty<RadarSnakeState>();
     private double _radarUpdateElapsed;
     private bool _radarSnapshotDirty = true;
+    private int _nextSnakeId = 1;
+    private readonly SnakeId _localPlayerId;
 
     public WorldSimulation(SnakeSimulationSettings? snakeSettings = null, WorldSimulationSettings? worldSettings = null)
     {
@@ -37,7 +38,8 @@ public sealed class WorldSimulation
         _collisionDetector = new SnakeCollisionDetector(_settings.CollisionGridCellSize);
         _randomState = Mix((ulong)(uint)_settings.WorldSeed ^ 0xA0761D6478BD642FUL);
         GameplayMode = _settings.StartupGameplayMode;
-        AddSnake(new SnakeId(HumanSnakeId), SnakeControllerKind.Human, new WorldVector(0, 0), new WorldVector(1, 0));
+        _localPlayerId = AllocateSnakeId();
+        AddSnake(_localPlayerId, SnakeControllerKind.Human, new WorldVector(0, 0), new WorldVector(1, 0));
         ConfigurePopulation(PopulationMode.InteractionTest, _settings.InitialBotCount);
         _dots.ActivateAround(new WorldVector(0, 0));
     }
@@ -48,6 +50,7 @@ public sealed class WorldSimulation
     public GameplayMode GameplayMode { get; private set; }
     public int ConfiguredBotCount { get; private set; }
     public ulong Tick { get; private set; }
+    public SnakeId LocalPlayerId => _localPlayerId;
 
     public void ConfigureControlledProfiling(bool enabled) =>
         _suppressDeathsForProfiling = enabled;
@@ -55,7 +58,7 @@ public sealed class WorldSimulation
     public void ConfigureGameplayMode(GameplayMode mode)
     {
         GameplayMode = mode;
-        var human = _snakes[0];
+        var human = FindSnake(_localPlayerId);
         var position = human.Simulation.HeadPosition;
         var heading = human.Simulation.Heading;
         human.Generation++;
@@ -66,6 +69,7 @@ public sealed class WorldSimulation
         _debugGrantedMass += human.AcquiredMass;
         ApplyGrowthScale(human);
         human.LifeSeconds = 0;
+        human.BoostReleaseElapsed = 0;
         human.LifeState = SnakeLifeState.Alive;
         _radarSnapshotDirty = true;
         _events.Add(new WorldEvent(Tick, WorldEventKind.SnakeRespawned, human.Id, human.Generation));
@@ -76,18 +80,53 @@ public sealed class WorldSimulation
         if (botCount is < 0 or > 250) throw new ArgumentOutOfRangeException(nameof(botCount));
         PopulationMode = mode;
         ConfiguredBotCount = botCount;
-        while (_snakes.Count - 1 > botCount) _snakes.RemoveAt(_snakes.Count - 1);
-        while (_snakes.Count - 1 < botCount)
+        while (_snakes.Count(static snake => snake.ControllerKind == SnakeControllerKind.WanderBot) > botCount)
         {
-            var id = new SnakeId(_snakes.Count + 1);
-            AddSnake(id, SnakeControllerKind.WanderBot, FindInitialSpawn(mode), RandomDirection());
+            var lastBot = _snakes.FindLastIndex(static snake => snake.ControllerKind == SnakeControllerKind.WanderBot);
+            _snakes.RemoveAt(lastBot);
         }
+        while (_snakes.Count(static snake => snake.ControllerKind == SnakeControllerKind.WanderBot) < botCount)
+            AddSnake(AllocateSnakeId(), SnakeControllerKind.WanderBot, FindInitialSpawn(mode), RandomDirection());
         _radarSnapshotDirty = true;
+    }
+
+    public SnakeId AddPlayer(WorldVector? position = null, WorldVector? heading = null)
+    {
+        var id = AllocateSnakeId();
+        AddSnake(
+            id,
+            SnakeControllerKind.Human,
+            position ?? FindSafeRespawn(),
+            heading ?? RandomDirection());
+        _radarSnapshotDirty = true;
+        return id;
+    }
+
+    public bool RemovePlayer(SnakeId id)
+    {
+        if (id == _localPlayerId) return false;
+        var index = _snakes.FindIndex(snake =>
+            snake.Id == id && snake.ControllerKind == SnakeControllerKind.Human);
+        if (index < 0) return false;
+        _destroyedMass += _snakes[index].AcquiredMass;
+        _snakes.RemoveAt(index);
+        _radarSnapshotDirty = true;
+        return true;
     }
 
     public void Step(double fixedDeltaTime, double requestedDirectionX, double requestedDirectionY, bool hasDirection, bool boost)
     {
+        var controls = new Dictionary<SnakeId, SnakeControl>(1)
+        {
+            [_localPlayerId] = new SnakeControl(requestedDirectionX, requestedDirectionY, hasDirection, boost)
+        };
+        Step(fixedDeltaTime, controls);
+    }
+
+    public void Step(double fixedDeltaTime, IReadOnlyDictionary<SnakeId, SnakeControl> playerControls)
+    {
         if (!double.IsFinite(fixedDeltaTime) || fixedDeltaTime <= 0) throw new ArgumentOutOfRangeException(nameof(fixedDeltaTime));
+        ArgumentNullException.ThrowIfNull(playerControls);
         Tick++;
         _radarUpdateElapsed += fixedDeltaTime;
         if (_radarUpdateElapsed >= _settings.RadarUpdateIntervalSeconds)
@@ -96,8 +135,6 @@ public sealed class WorldSimulation
             _radarSnapshotDirty = true;
         }
         _events.Clear();
-        var humanControl = new SnakeControl(requestedDirectionX, requestedDirectionY, hasDirection, boost);
-
         var timer = Stopwatch.StartNew();
         var controls = new SnakeControl[_snakes.Count];
         for (var index = 0; index < _snakes.Count; index++)
@@ -106,7 +143,9 @@ public sealed class WorldSimulation
             if (entity.LifeState != SnakeLifeState.Alive) continue;
             if (entity.ControllerKind == SnakeControllerKind.Human)
             {
-                controls[index] = humanControl;
+                controls[index] = playerControls.TryGetValue(entity.Id, out var playerControl)
+                    ? playerControl
+                    : default;
                 continue;
             }
 
@@ -139,7 +178,9 @@ public sealed class WorldSimulation
             var entity = _snakes[index];
             if (entity.LifeState != SnakeLifeState.Alive) continue;
             var control = controls[index];
-            entity.Simulation.Step(fixedDeltaTime, control.TargetDirectionX, control.TargetDirectionY, control.HasDirection, control.Boost);
+            var boostAllowed = control.Boost && entity.MatchScore > _settings.BoostMinimumScore;
+            entity.Simulation.Step(fixedDeltaTime, control.TargetDirectionX, control.TargetDirectionY, control.HasDirection, boostAllowed);
+            ProcessBoostEnergyRelease(entity, fixedDeltaTime, boostAllowed);
             entity.LifeSeconds += fixedDeltaTime;
         }
         _motionMilliseconds = timer.Elapsed.TotalMilliseconds;
@@ -155,11 +196,16 @@ public sealed class WorldSimulation
         UpdateRespawns(fixedDeltaTime);
     }
 
-    public WorldState CaptureState()
+    public WorldState CaptureState(double viewportAspectRatio = 16.0 / 9.0) =>
+        CaptureState(_localPlayerId, viewportAspectRatio);
+
+    public WorldState CaptureState(SnakeId observerId, double viewportAspectRatio = 16.0 / 9.0)
     {
+        if (!double.IsFinite(viewportAspectRatio) || viewportAspectRatio <= 0)
+            throw new ArgumentOutOfRangeException(nameof(viewportAspectRatio));
         var timer = Stopwatch.StartNew();
-        var local = _snakes[0];
-        var localPosition = local.LifeState == SnakeLifeState.Alive ? local.Simulation.HeadPosition : new WorldVector(0, 0);
+        var local = FindSnake(observerId);
+        var localPosition = local.Simulation.HeadPosition;
         var visibleRadius = _settings.VisibleSnakeRadius * local.Simulation.SizeScale;
         var visible = new List<SnakeEntityState>();
         List<RadarSnakeState>? refreshedRadar = _radarSnapshotDirty
@@ -173,7 +219,7 @@ public sealed class WorldSimulation
             if (entity.LifeState != SnakeLifeState.Alive)
             {
                 waiting++;
-                if (entity.Id.Value == HumanSnakeId) visible.Add(entity.Capture(entity.Simulation.CaptureState()));
+                if (entity.Id == observerId) visible.Add(entity.Capture(entity.Simulation.CaptureState()));
                 continue;
             }
             alive++;
@@ -187,7 +233,7 @@ public sealed class WorldSimulation
                     entity.Simulation.HeadPosition,
                     entity.Simulation.BodyPositions.ToArray()));
             }
-            if (entity.Id.Value == HumanSnakeId ||
+            if (entity.Id == observerId ||
                 SnakeInterest.IntersectsCircle(
                     localPosition,
                     visibleRadius,
@@ -202,16 +248,27 @@ public sealed class WorldSimulation
             _radarSnapshotDirty = false;
         }
         visible.Sort(static (left, right) => left.Id.Value.CompareTo(right.Id.Value));
-        var activeDots = _dots.ActivateAround(localPosition);
+        var visibleWorldHeight = 12.0 * SnakeGrowthCurve.CameraScaleForScore(local.MatchScore);
+        var activeDots = _dots.ActivateWithinViewport(
+            localPosition,
+            visibleWorldHeight * viewportAspectRatio * 0.5,
+            visibleWorldHeight * 0.5,
+            _settings.DotViewportPreloadMargin);
         var snakeMass = _snakes.Sum(static snake => (long)snake.AcquiredMass);
         var metrics = new WorldMetrics(alive, waiting, bodyNodes, _collisionDetector.CandidateCount,
             _collisionDetector.NarrowPhaseCount, _totalDeaths, _totalRespawns,
             _dots.EnvironmentalMassGenerated + _debugGrantedMass,
             snakeMass, _dots.ActiveEnergy, _releasedMass, _destroyedMass, _aiMilliseconds, _motionMilliseconds, _indexMilliseconds,
             _collisionMilliseconds, timer.Elapsed.TotalMilliseconds);
-        return new WorldState(Tick, new SnakeId(HumanSnakeId), visible, _cachedRadarSnakes, activeDots, _dots.GeneratedCellCount,
+        return new WorldState(Tick, observerId, visible, _cachedRadarSnakes, activeDots, _dots.GeneratedCellCount,
             _dots.CollectedCount, _events.ToArray(), metrics, PopulationMode, ConfiguredBotCount);
     }
+
+    private SnakeId AllocateSnakeId() => new(_nextSnakeId++);
+
+    private SnakeEntity FindSnake(SnakeId id) =>
+        _snakes.FirstOrDefault(snake => snake.Id == id) ??
+        throw new ArgumentOutOfRangeException(nameof(id), $"Snake {id.Value} does not exist.");
 
     private void AddSnake(SnakeId id, SnakeControllerKind kind, WorldVector position, WorldVector heading)
     {
@@ -252,7 +309,10 @@ public sealed class WorldSimulation
         foreach (var entity in _snakes.OrderBy(static snake => snake.Id.Value))
         {
             if (entity.LifeState != SnakeLifeState.Alive) continue;
-            var collected = _dots.CollectDetailedAt(entity.Simulation.HeadPosition, entity.Simulation.HeadRadius);
+            var collected = _dots.CollectDetailedAt(
+                entity.Simulation.HeadPosition,
+                entity.Simulation.HeadRadius,
+                Tick);
             if (collected.Count == 0) continue;
             entity.MatchScore += collected.Score;
             entity.AcquiredMass += collected.Score;
@@ -273,7 +333,12 @@ public sealed class WorldSimulation
             if (alive.Length > 0)
             {
                 var selected = alive[(int)(Tick % (ulong)alive.Length)].Simulation.HeadPosition;
-                _dots.SpawnNear(selected, _settings.DynamicSpawnCount);
+                _dots.SpawnNear(
+                    selected,
+                    _settings.DynamicSpawnCount,
+                    Tick,
+                    (ulong)Math.Max(1, Math.Ceiling(
+                        _settings.NewDotFadeInSeconds * SimulationSettings.TicksPerSecond)));
             }
         }
         foreach (var entity in _snakes)
@@ -380,7 +445,9 @@ public sealed class WorldSimulation
             }
             CreateDeathDrops(victim);
             victim.LifeState = SnakeLifeState.DeadWaitingRespawn;
-            victim.RespawnTime = victim.ControllerKind == SnakeControllerKind.Human ? _settings.PlayerRespawnSeconds : _settings.BotRespawnSeconds;
+            victim.RespawnTime = victim.ControllerKind == SnakeControllerKind.Human
+                ? _settings.PlayerDeathObservationSeconds + _settings.PlayerDeathFadeSeconds
+                : _settings.BotRespawnSeconds;
             _totalDeaths++;
             _events.Add(new WorldEvent(Tick, WorldEventKind.SnakeDied, victim.Id, victim.Generation, collision.KillerId));
         }
@@ -390,28 +457,34 @@ public sealed class WorldSimulation
     {
         var releasedEnergy = victim.AcquiredMass;
         var state = victim.Simulation.CaptureState();
-        var dotCount = state.Body.Count;
+        var dotCount = Math.Max(1, (int)Math.Ceiling(
+            state.Body.Count * _settings.DeathDropCountScale));
         if (releasedEnergy <= 0 || dotCount == 0) return;
 
         _releasedMass += releasedEnergy;
         victim.AcquiredMass = 0;
         for (var index = 0; index < dotCount; index++)
         {
-            var bodyPosition = state.Body[index].Position;
+            var isHeadDrop = index < Math.Min(2, dotCount);
+            var bodyPosition = isHeadDrop
+                ? state.HeadPosition
+                : DeathDropPath.Sample(state, index, dotCount);
             var previousPosition = index == 0
                 ? state.HeadPosition
-                : state.Body[index - 1].Position;
+                : DeathDropPath.Sample(state, index - 1, dotCount);
             var nextPosition = index + 1 < dotCount
-                ? state.Body[index + 1].Position
+                ? DeathDropPath.Sample(state, index + 1, dotCount)
                 : bodyPosition - state.Heading;
             var tangent = (previousPosition - nextPosition).NormalizedOr(state.Heading);
             var normal = new WorldVector(-tangent.Y, tangent.X);
-            var longitudinalOffset = ((NextDouble() * 2) - 1) *
-                                     victim.Simulation.BodyRadius *
-                                     _settings.DeathDropLongitudinalSpreadScale;
-            var orthogonalOffset = ((NextDouble() * 2) - 1) *
-                                   victim.Simulation.BodyRadius *
-                                   _settings.DeathDropOrthogonalSpreadScale;
+            var longitudinalOffset = isHeadDrop
+                ? 0
+                : ((NextDouble() * 2) - 1) * victim.Simulation.BodyRadius *
+                  _settings.DeathDropLongitudinalSpreadScale;
+            var orthogonalOffset = isHeadDrop
+                ? (index == 0 ? 0 : 0.38) * victim.Simulation.BodyRadius
+                : ((NextDouble() * 2) - 1) * victim.Simulation.BodyRadius *
+                  _settings.DeathDropOrthogonalSpreadScale;
             var radius = victim.Simulation.BodyRadius * _settings.DeathDropRadiusScale;
             var position = ClampInsideArena(
                 bodyPosition + (tangent * longitudinalOffset) + (normal * orthogonalOffset),
@@ -434,6 +507,99 @@ public sealed class WorldSimulation
         return position.Length <= maximumDistance
             ? position
             : position.NormalizedOr(new WorldVector(1, 0)) * maximumDistance;
+    }
+
+    private void ProcessBoostEnergyRelease(SnakeEntity entity, double fixedDeltaTime, bool boostAllowed)
+    {
+        if (boostAllowed && entity.MatchScore > _settings.BoostMinimumScore && entity.AcquiredMass > 0)
+        {
+            entity.BoostReleaseElapsed += fixedDeltaTime;
+            if (entity.BoostReleaseElapsed + 1e-9 >= _settings.BoostEnergyReleaseIntervalSeconds)
+            {
+                entity.BoostReleaseElapsed %= _settings.BoostEnergyReleaseIntervalSeconds;
+                var releasedEnergy = Math.Max(
+                    1,
+                    (int)Math.Ceiling(entity.MatchScore * _settings.BoostEnergyReleaseFraction));
+                releasedEnergy = Math.Min(releasedEnergy,
+                    Math.Min(entity.MatchScore - _settings.BoostMinimumScore, entity.AcquiredMass));
+                if (releasedEnergy > 0)
+                {
+                    var wasEmpty = entity.PendingBoostReleaseEnergy == 0;
+                    entity.MatchScore -= releasedEnergy;
+                    entity.AcquiredMass -= releasedEnergy;
+                    _releasedMass += releasedEnergy;
+                    entity.PendingBoostReleaseEnergy += releasedEnergy;
+                    var dotCount = (int)Math.Ceiling(
+                        entity.PendingBoostReleaseEnergy / (double)_settings.BoostMaximumDotEnergy);
+                    entity.BoostDropEmissionInterval =
+                        _settings.BoostEnergyReleaseIntervalSeconds / Math.Max(1, dotCount);
+                    if (wasEmpty)
+                        entity.BoostDropEmissionElapsed = entity.BoostDropEmissionInterval;
+                    ApplyGrowthScale(entity);
+                    entity.Simulation.EnsureBodyNodeCount(
+                        SnakeGrowthCurve.BodyNodesForScore(entity.MatchScore, _snakeSettings.InitialBodyNodes));
+                }
+            }
+        }
+        else
+        {
+            entity.BoostReleaseElapsed = 0;
+        }
+
+        EmitPendingBoostDots(entity, fixedDeltaTime);
+
+        if (entity.MatchScore <= _settings.BoostMinimumScore)
+        {
+            entity.BoostReleaseElapsed = 0;
+            entity.Simulation.StopBoost();
+        }
+    }
+
+    private void EmitPendingBoostDots(SnakeEntity entity, double fixedDeltaTime)
+    {
+        if (entity.PendingBoostReleaseEnergy <= 0 || entity.BoostDropEmissionInterval <= 0) return;
+
+        entity.BoostDropEmissionElapsed += fixedDeltaTime;
+        var fadeInDurationTicks = (ulong)Math.Max(1, Math.Ceiling(
+            _settings.BoostDropFadeInSeconds * SimulationSettings.TicksPerSecond));
+        var emittedThisTick = 0;
+        while (entity.PendingBoostReleaseEnergy > 0 &&
+               entity.BoostDropEmissionElapsed + 1e-9 >= entity.BoostDropEmissionInterval)
+        {
+            entity.BoostDropEmissionElapsed -= entity.BoostDropEmissionInterval;
+            var dotEnergy = Math.Min(_settings.BoostMaximumDotEnergy, entity.PendingBoostReleaseEnergy);
+            entity.PendingBoostReleaseEnergy -= dotEnergy;
+            var body = entity.Simulation.BodyPositions;
+            var tail = body[^1];
+            var previous = body.Count > 1 ? body[^2] : entity.Simulation.HeadPosition;
+            var tailDirection = (tail - previous).NormalizedOr(entity.Simulation.Heading * -1);
+            var tailNormal = new WorldVector(-tailDirection.Y, tailDirection.X);
+            var pointsPerSegment = SnakeGrowthCurve.PointsPerSegment(entity.MatchScore);
+            var radius = Math.Max(
+                _settings.SmallDotRadius,
+                entity.Simulation.BodyRadius * Math.Sqrt(dotEnergy / pointsPerSegment));
+            var trailingDistance = entity.Simulation.BodyRadius *
+                                   (1.0 + (emittedThisTick * _settings.BoostDropTrailSpacingScale));
+            var orthogonalOffset = ((NextDouble() * 2) - 1) *
+                                   entity.Simulation.BodyRadius *
+                                   _settings.BoostDropOrthogonalSpreadScale;
+            var position = ClampInsideArena(
+                tail + (tailDirection * trailingDistance) + (tailNormal * orthogonalOffset),
+                radius);
+            _dots.AddDropDot(
+                position,
+                dotEnergy,
+                fadeInStartTick: Tick,
+                fadeInDurationTicks: fadeInDurationTicks,
+                radiusOverride: radius);
+            emittedThisTick++;
+        }
+
+        if (entity.PendingBoostReleaseEnergy == 0)
+        {
+            entity.BoostDropEmissionElapsed = 0;
+            entity.BoostDropEmissionInterval = 0;
+        }
     }
 
     private void UpdateRespawns(double fixedDeltaTime)
@@ -461,6 +627,7 @@ public sealed class WorldSimulation
             entity.PerceptionTime = 0;
             entity.DotTarget = null;
             entity.Avoidance = new WorldVector(0, 0);
+            entity.BoostReleaseElapsed = 0;
             entity.LifeState = SnakeLifeState.Alive;
             _totalRespawns++;
             _events.Add(new WorldEvent(Tick, WorldEventKind.SnakeRespawned, entity.Id, entity.Generation));
@@ -588,15 +755,22 @@ public sealed class WorldSimulation
             settings.InitialScorePointsPerBodyNode < 1 ||
             settings.VisibleSnakeRadius <= 0 || settings.RadarUpdateIntervalSeconds <= 0 || settings.InitialBotMinimumRadius < 0 ||
             settings.InitialBotMaximumRadius < settings.InitialBotMinimumRadius || settings.BotDirectionMinimumSeconds <= 0 ||
+            settings.BoostEnergyReleaseFraction is <= 0 or >= 1 ||
+            settings.BoostEnergyReleaseIntervalSeconds <= 0 || settings.BoostDropFadeInSeconds <= 0 ||
+            settings.BoostMinimumScore < 1 || settings.BoostMaximumDotEnergy < 1 ||
+            settings.BoostDropTrailSpacingScale <= 0 || settings.BoostDropOrthogonalSpreadScale < 0 ||
             settings.BotDirectionMaximumSeconds < settings.BotDirectionMinimumSeconds || settings.CollisionGridCellSize <= 0 ||
             settings.DropFraction is < 0 or > 1 || settings.DeathDropRadiusScale <= 0 ||
+            settings.DeathDropCountScale is <= 0 or > 1 ||
             settings.DeathDropSmallProbability is < 0 or > 1 ||
             settings.DeathDropSmallMinimumRadiusScale <= 0 ||
             settings.DeathDropSmallMaximumRadiusScale < settings.DeathDropSmallMinimumRadiusScale ||
             settings.DeathDropMainMinimumRadiusScale < settings.DeathDropSmallMaximumRadiusScale ||
             settings.DeathDropMainMinimumRadiusScale > 1 ||
             settings.DeathDropLongitudinalSpreadScale <= 0 || settings.DeathDropOrthogonalSpreadScale <= 0 ||
-            settings.DeathDropFadeInSeconds <= 0 ||
+            settings.DeathDropFadeInSeconds <= 0 || settings.NewDotFadeInSeconds <= 0 ||
+            settings.DotViewportPreloadMargin < 0 ||
+            settings.PlayerDeathObservationSeconds < 0 || settings.PlayerDeathFadeSeconds <= 0 ||
             settings.BotDotSenseRadius <= 0 || settings.BotOpponentAvoidanceRadius <= 0 ||
             settings.BotInputTurnRateDegrees <= 0 ||
             settings.HeadToHeadApproachTieTolerance is < 0 or > 2 ||
@@ -626,8 +800,12 @@ public sealed class WorldSimulation
         public double PerceptionTime { get; set; }
         public WorldVector? DotTarget { get; set; }
         public WorldVector Avoidance { get; set; }
+        public double BoostReleaseElapsed { get; set; }
+        public int PendingBoostReleaseEnergy { get; set; }
+        public double BoostDropEmissionElapsed { get; set; }
+        public double BoostDropEmissionInterval { get; set; }
         public SnakeEntityState Capture(SnakeState state) => new(Id, Generation, ControllerKind, LifeState, StyleId, state,
-            MatchScore, AcquiredMass, Kills, Deaths, LifeSeconds);
+            MatchScore, AcquiredMass, Kills, Deaths, LifeSeconds, RespawnTime);
     }
 }
 

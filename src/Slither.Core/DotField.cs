@@ -48,6 +48,37 @@ public sealed class DotField
         return active;
     }
 
+    public IReadOnlyList<DotState> ActivateWithinViewport(
+        WorldVector position,
+        double halfWidth,
+        double halfHeight,
+        double preloadMargin)
+    {
+        if (!double.IsFinite(halfWidth) || halfWidth <= 0 ||
+            !double.IsFinite(halfHeight) || halfHeight <= 0 ||
+            !double.IsFinite(preloadMargin) || preloadMargin < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(halfWidth));
+        }
+
+        var horizontalExtent = halfWidth + preloadMargin;
+        var verticalExtent = halfHeight + preloadMargin;
+        var minimumCell = GetCell(position - new WorldVector(horizontalExtent, verticalExtent));
+        var maximumCell = GetCell(position + new WorldVector(horizontalExtent, verticalExtent));
+        var active = new List<DotState>();
+        for (var cellY = minimumCell.Y; cellY <= maximumCell.Y; cellY++)
+        {
+            for (var cellX = minimumCell.X; cellX <= maximumCell.X; cellX++)
+            {
+                var cell = new CellCoordinate(cellX, cellY);
+                EnsureCell(cell);
+                active.AddRange(_cells[cell]);
+            }
+        }
+
+        return active;
+    }
+
     public void EnsureAround(WorldVector position)
     {
         var centerCell = GetCell(position);
@@ -98,7 +129,10 @@ public sealed class DotField
     public int CollectAt(WorldVector position, double headRadius)
         => CollectDetailedAt(position, headRadius).Score;
 
-    public DotCollection CollectDetailedAt(WorldVector position, double headRadius)
+    public DotCollection CollectDetailedAt(
+        WorldVector position,
+        double headRadius,
+        ulong currentTick = ulong.MaxValue)
     {
         var centerCell = GetCell(position);
         var collectedEnergy = 0;
@@ -113,6 +147,11 @@ public sealed class DotField
                 for (var index = dots.Count - 1; index >= 0; index--)
                 {
                     var dot = dots[index];
+                    if (dot.FadeInDurationTicks > 0 &&
+                        currentTick < dot.FadeInStartTick + dot.FadeInDurationTicks)
+                    {
+                        continue;
+                    }
                     var collisionRadius = headRadius + dot.Radius;
                     if ((dot.Position - position).Length > collisionRadius)
                     {
@@ -164,7 +203,11 @@ public sealed class DotField
             fadeInDurationTicks));
     }
 
-    public IReadOnlyList<DotState> SpawnNear(WorldVector headPosition, int? count = null)
+    public IReadOnlyList<DotState> SpawnNear(
+        WorldVector headPosition,
+        int? count = null,
+        ulong fadeInStartTick = 0,
+        ulong fadeInDurationTicks = 0)
     {
         var spawned = new List<DotState>();
         var requestedCount = count ?? _settings.DynamicSpawnCount;
@@ -182,7 +225,13 @@ public sealed class DotField
                 continue;
             }
 
-            var dot = new DotState(_nextDynamicId++, position, radius, energy);
+            var dot = new DotState(
+                _nextDynamicId++,
+                position,
+                radius,
+                energy,
+                fadeInStartTick,
+                fadeInDurationTicks);
             var cell = GetCell(position);
             EnsureCell(cell);
             _cells[cell].Add(dot);

@@ -62,7 +62,10 @@ public readonly record struct WorldSnapshot(
     WorldMetricsSnapshot Metrics = default,
     int ConfiguredBotCount = 0,
     int PopulationMode = 0,
-    IReadOnlyList<RadarSnakeSnapshot>? RadarSnakes = null);
+    IReadOnlyList<RadarSnakeSnapshot>? RadarSnakes = null,
+    double ScreenFadeOpacity = 0.0,
+    uint LastProcessedCommandSequence = 0,
+    int SchemaVersion = ProtocolVersion.Current);
 
 public readonly record struct WorldEventSnapshot(
     ulong Tick,

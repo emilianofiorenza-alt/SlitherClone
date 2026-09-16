@@ -16,7 +16,7 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
 
     private static readonly Color ArenaColor = new(12, 31, 43);
     private static readonly Color OutsideColor = new(92, 13, 22);
-    private static readonly Color SnakeShadowColor = new(0, 0, 0, 145);
+    private static readonly Color SnakeShadowColor = new(0, 0, 0, 90);
     private static readonly Color BoundaryColor = new(205, 43, 52);
     private static readonly Color[] DotPalette =
     [
@@ -53,6 +53,8 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
     private readonly Texture2D _dotDiscTexture;
     private readonly Texture2D _dotLightAtlas;
     private readonly Texture2D _snakeBodyAtlas;
+    private readonly List<SnakeRenderPair> _snakeRenderPairs = [];
+    private int[] _snakeBodyIndices = [];
     private readonly SamplerState _backgroundSampler = new()
     {
         Filter = TextureFilter.Linear,
@@ -134,6 +136,7 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
             RenderDots(snapshot.VisibleDots, viewBounds);
         var currentSnakes = snapshot.VisibleSnakes ?? [snapshot.Snake];
         var previousSnakes = previousSnapshot.VisibleSnakes ?? [previousSnapshot.Snake];
+        _snakeRenderPairs.Clear();
         foreach (var currentSnake in currentSnakes)
         {
             if (!currentSnake.IsAlive) continue;
@@ -146,8 +149,13 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
                     break;
                 }
             }
-            using (new ProfileScope("Slither.Snake"))
-                RenderSnake(previousSnake, currentSnake, interpolationAlpha, viewBounds);
+            _snakeRenderPairs.Add(new SnakeRenderPair(previousSnake, currentSnake));
+        }
+        using (new ProfileScope("Slither.Snake"))
+        {
+            RenderSnakeBodies(_snakeRenderPairs, interpolationAlpha, viewBounds);
+            foreach (var pair in _snakeRenderPairs)
+                RenderSnakeHead(pair.Previous, pair.Current, interpolationAlpha, viewBounds);
         }
         using (new ProfileScope("Slither.Radar"))
             RenderRadar(snapshot, layout);
@@ -163,6 +171,33 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
         _backgroundSampler.Dispose();
         _effect.Dispose();
         _rasterizerState.Dispose();
+    }
+
+    public void RenderScreenFade(double opacity)
+    {
+        if (opacity <= 0) return;
+        var layout = _layout ?? throw new InvalidOperationException("Screen layout has not been set.");
+        var color = Color.Black * (float)Math.Clamp(opacity, 0, 1);
+        var vertices = new[]
+        {
+            new VertexPositionColor(new Vector3(0, 0, 0), color),
+            new VertexPositionColor(new Vector3(layout.ViewportWidth, 0, 0), color),
+            new VertexPositionColor(new Vector3(layout.ViewportWidth, layout.ViewportHeight, 0), color),
+            new VertexPositionColor(new Vector3(0, 0, 0), color),
+            new VertexPositionColor(new Vector3(layout.ViewportWidth, layout.ViewportHeight, 0), color),
+            new VertexPositionColor(new Vector3(0, layout.ViewportHeight, 0), color)
+        };
+        _graphicsDevice.BlendState = BlendState.AlphaBlend;
+        _graphicsDevice.DepthStencilState = DepthStencilState.None;
+        _effect.View = Matrix.Identity;
+        _effect.Projection = Matrix.CreateOrthographicOffCenter(
+            0,
+            layout.ViewportWidth,
+            layout.ViewportHeight,
+            0,
+            0,
+            1);
+        DrawColoredTriangles(vertices, vertices.Length);
     }
 
     private ViewBounds ConfigureProjection(ScreenLayout layout, double cameraX, double cameraY)
@@ -253,35 +288,61 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
         _effect.TextureEnabled = false;
     }
 
-    private void RenderSnake(SnakeSnapshot previous, SnakeSnapshot current, float alpha, ViewBounds view)
+    private void RenderSnakeBodies(IReadOnlyList<SnakeRenderPair> snakes, float alpha, ViewBounds view)
+    {
+        var totalBodyCount = 0;
+        if (_snakeBodyIndices.Length < snakes.Count)
+            Array.Resize(ref _snakeBodyIndices, Math.Max(snakes.Count, Math.Max(16, _snakeBodyIndices.Length * 2)));
+        for (var snakeIndex = 0; snakeIndex < snakes.Count; snakeIndex++)
+        {
+            var pair = snakes[snakeIndex];
+            var bodyCount = Math.Min(pair.Previous.Body.Count, pair.Current.Body.Count);
+            _snakeBodyIndices[snakeIndex] = bodyCount - 1;
+            totalBodyCount += bodyCount;
+        }
+
+        EnsureSnakeCapacity(totalBodyCount);
+        var bodyVertexCount = 0;
+        const int depthLayers = 64;
+        for (var layer = depthLayers - 1; layer >= 0; layer--)
+        {
+            for (var snakeIndex = 0; snakeIndex < snakes.Count; snakeIndex++)
+            {
+                var pair = snakes[snakeIndex];
+                var bodyCount = Math.Min(pair.Previous.Body.Count, pair.Current.Body.Count);
+                var index = _snakeBodyIndices[snakeIndex];
+                while (index >= 0 && ((index * depthLayers) / Math.Max(1, bodyCount)) == layer)
+                {
+                    var oldNode = pair.Previous.Body[index];
+                    var node = pair.Current.Body[index];
+                    var x = Lerp(oldNode.X, node.X, alpha);
+                    var y = Lerp(oldNode.Y, node.Y, alpha);
+                    var radius = Lerp(oldNode.Radius, node.Radius, alpha);
+                    if (CircleIntersectsView(x, y, radius * 1.1, view))
+                    {
+                        AddSnakeBodyQuad(
+                            _snakeBodyVertices,
+                            ref bodyVertexCount,
+                            x,
+                            y,
+                            radius,
+                            Math.Abs(pair.Current.StyleId) % SnakePalette.Length);
+                    }
+                    index--;
+                }
+                _snakeBodyIndices[snakeIndex] = index;
+            }
+        }
+        DrawSnakeBodyQuads(_snakeBodyVertices, bodyVertexCount);
+    }
+
+    private void RenderSnakeHead(SnakeSnapshot previous, SnakeSnapshot current, float alpha, ViewBounds view)
     {
         var style = SnakePalette[Math.Abs(current.StyleId) % SnakePalette.Length];
-        var bodyCount = Math.Min(previous.Body.Count, current.Body.Count);
         var headX = Lerp(previous.HeadX, current.HeadX, alpha);
         var headY = Lerp(previous.HeadY, current.HeadY, alpha);
         var headRadius = Lerp(previous.HeadRadius, current.HeadRadius, alpha);
-
-        EnsureSnakeCapacity(bodyCount);
-        var bodyVertexCount = 0;
         var headVisible = CircleIntersectsView(headX, headY, headRadius * 1.1, view);
-
-        for (var index = bodyCount - 1; index >= 0; index--)
-        {
-            var oldNode = previous.Body[index];
-            var node = current.Body[index];
-            var x = Lerp(oldNode.X, node.X, alpha);
-            var y = Lerp(oldNode.Y, node.Y, alpha);
-            var radius = Lerp(oldNode.Radius, node.Radius, alpha);
-            if (!CircleIntersectsView(x, y, radius * 1.1, view)) continue;
-            AddSnakeBodyQuad(
-                _snakeBodyVertices,
-                ref bodyVertexCount,
-                x,
-                y,
-                radius,
-                Math.Abs(current.StyleId) % SnakePalette.Length);
-        }
-        DrawSnakeBodyQuads(_snakeBodyVertices, bodyVertexCount);
 
         if (!headVisible) return;
 
@@ -866,10 +927,10 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
                     var ny = ((1 - (((y + 0.5f) / SnakeTextureSize) * 2))) * (float)SnakeTextureWorldRadius;
                     var color = Color.Transparent;
 
-                    var shadowDx = nx - 0.025f;
-                    var shadowDy = ny + 0.030f;
+                    var shadowDx = nx - 0.015f;
+                    var shadowDy = ny + 0.018f;
                     var shadowDistance = MathF.Sqrt((shadowDx * shadowDx) + (shadowDy * shadowDy));
-                    var shadowCoverage = 1 - SmoothStep(1.045f, 1.075f, shadowDistance);
+                    var shadowCoverage = 1 - SmoothStep(1.020f, 1.045f, shadowDistance);
                     if (shadowCoverage > 0)
                         color = Premultiplied(SnakeShadowColor, shadowCoverage);
 
@@ -942,4 +1003,6 @@ public sealed class PrimitiveSnapshotRenderer : ISnapshotRenderer, IDisposable
         from + ((to - from) * amount);
 
     private readonly record struct ViewBounds(double Left, double Right, double Bottom, double Top);
+
+    private readonly record struct SnakeRenderPair(SnakeSnapshot Previous, SnakeSnapshot Current);
 }

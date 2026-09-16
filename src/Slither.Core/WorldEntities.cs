@@ -75,7 +75,8 @@ public sealed record SnakeEntityState(
     int AcquiredMass,
     int Kills,
     int Deaths,
-    double LifeSeconds);
+    double LifeSeconds,
+    double RespawnTime);
 
 public sealed record RadarSnakeState(
     SnakeId Id,

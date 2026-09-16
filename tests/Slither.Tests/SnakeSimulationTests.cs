@@ -70,7 +70,7 @@ public sealed class SnakeSimulationTests
         boost.Step(SimulationSettings.FixedDeltaTime, 1000, 0, true, true);
 
         Assert.Equal(normal.Settings.BaseSpeed, normal.CaptureState().CurrentSpeed);
-        Assert.Equal(normal.Settings.BaseSpeed * 3, boost.Settings.BoostSpeed);
+        Assert.Equal(normal.Settings.BaseSpeed * 2.5, boost.Settings.BoostSpeed);
         var firstBoostSpeed = boost.Settings.BaseSpeed +
                               (boost.Settings.BoostAcceleration * SimulationSettings.FixedDeltaTime);
         Assert.Equal(firstBoostSpeed, boost.CaptureState().CurrentSpeed, 10);

@@ -11,7 +11,7 @@ public sealed class SlitherGame : Game
 {
     private readonly GraphicsDeviceManager _graphics;
     private readonly FixedStepAccumulator _clock = new();
-    private readonly LocalSimulationEndpoint _simulation = new();
+    private readonly ISimulationEndpoint _simulation;
 
     private PlatformCommandSource? _commands;
     private PrimitiveSnapshotRenderer? _renderer;
@@ -26,8 +26,12 @@ public sealed class SlitherGame : Game
     private KeyboardState _previousKeyboard;
 #endif
 
-    public SlitherGame(int? preferredWidth = null, int? preferredHeight = null)
+    public SlitherGame(
+        int? preferredWidth = null,
+        int? preferredHeight = null,
+        ISimulationEndpoint? simulationEndpoint = null)
     {
+        _simulation = simulationEndpoint ?? new LocalSimulationEndpoint();
 #if ANDROID
         _graphics = new GraphicsDeviceManager(this)
         {
@@ -76,13 +80,16 @@ public sealed class SlitherGame : Game
             Exit();
             return;
         }
-        if (Pressed(keyboard, Keys.F1)) _simulation.ConfigurePopulation(PopulationMode.InteractionTest, 10);
-        if (Pressed(keyboard, Keys.F2)) _simulation.ConfigurePopulation(PopulationMode.InteractionTest, 20);
-        if (Pressed(keyboard, Keys.F3)) _simulation.ConfigurePopulation(PopulationMode.StressTest, 50);
-        if (Pressed(keyboard, Keys.F4)) _simulation.ConfigurePopulation(PopulationMode.StressTest, 100);
-        if (Pressed(keyboard, Keys.F5)) _simulation.ConfigurePopulation(PopulationMode.PopulationTest, 20);
-        if (Pressed(keyboard, Keys.F6)) _simulation.ConfigureGameplayMode(GameplayMode.DebugLong);
-        if (Pressed(keyboard, Keys.F7)) _simulation.ConfigureGameplayMode(GameplayMode.Standard);
+        if (_simulation is LocalSimulationEndpoint localSimulation)
+        {
+            if (Pressed(keyboard, Keys.F1)) localSimulation.ConfigurePopulation(PopulationMode.InteractionTest, 10);
+            if (Pressed(keyboard, Keys.F2)) localSimulation.ConfigurePopulation(PopulationMode.InteractionTest, 20);
+            if (Pressed(keyboard, Keys.F3)) localSimulation.ConfigurePopulation(PopulationMode.StressTest, 50);
+            if (Pressed(keyboard, Keys.F4)) localSimulation.ConfigurePopulation(PopulationMode.StressTest, 100);
+            if (Pressed(keyboard, Keys.F5)) localSimulation.ConfigurePopulation(PopulationMode.PopulationTest, 20);
+            if (Pressed(keyboard, Keys.F6)) localSimulation.ConfigureGameplayMode(GameplayMode.DebugLong);
+            if (Pressed(keyboard, Keys.F7)) localSimulation.ConfigureGameplayMode(GameplayMode.Standard);
+        }
         _previousKeyboard = keyboard;
 #endif
 
@@ -113,6 +120,7 @@ public sealed class SlitherGame : Game
             _screenLayout!,
             _commands!.VirtualControls,
             _snapshot.Snake.Size);
+        _renderer.RenderScreenFade(_snapshot.ScreenFadeOpacity);
         RecordMetrics(gameTime.ElapsedGameTime.TotalSeconds);
         base.Draw(gameTime);
     }
@@ -192,6 +200,8 @@ public sealed class SlitherGame : Game
         }
 
         _screenLayout = ScreenLayout.Create(viewport.Width, viewport.Height, ScreenInsets.None);
+        if (_simulation is LocalSimulationEndpoint localSimulation)
+            localSimulation.ConfigureViewport(viewport.Width, viewport.Height);
         _renderer?.SetScreenLayout(_screenLayout);
     }
 }
